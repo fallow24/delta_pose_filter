@@ -1,0 +1,26 @@
+<launch> 
+    
+    <!-- Arguments, use this to set config parameters -->
+    <arg name="topic_publish" value="/delta/pose" />
+    <arg name="topic_pose_imu" value="/posePub_merged" />
+    <arg name="topic_pose_cam" value="/camera/pose" />
+    <arg name="frame_id_imu" value="static_imu" />
+    <arg name="frame_id_cam" value="static_cam" />
+    <arg name="imu_rate" value="125" />
+    <arg name="cam_rate" value="200" />
+
+    <!-- Convert arguments to rosparam server -->
+    <param name="topic_publish" type="string" value="$(arg topic_publish)" />
+    <param name="topic_pose_imu" type="string" value="$(arg topic_pose_imu)" />
+    <param name="topic_pose_cam" type="string" value="$(arg topic_pose_cam)" />
+    <param name="frame_id_imu" type="string" value="$(arg frame_id_imu)" />
+    <param name="frame_id_cam" type="string" value="$(arg frame_id_cam)" />
+    <param name="imu_rate" type="int" value="$(arg imu_rate)" />
+    <param name="cam_rate" type="int" value="$(arg cam_rate)" />
+
+    <node pkg="tf" type="static_transform_publisher" name="static_tf_imu_cam" args="0 0 0 1.570796 0 0 $(arg frame_id_cam) $(arg frame_id_imu) 100" />
+    <node pkg="tf" type="static_transform_publisher" name="axis_definition_tf_imu_cam" args="0 0 0 1.570796 0 3.141592 axes_cam axes_imu 100" />
+
+    <node pkg="delta_pose_filter" type="filter_node" name="delta_pose_filter_node" output="screen" />
+
+</launch>
