@@ -19,6 +19,8 @@ const char* frame_id_cam_default = "camera_frame";
 int imu_rate, cam_rate; // In Hz
 int n_acc; // Accumulation window of slower pose stream 
 
+double r_sphere; // Radius of sphere in m
+
 // Which pose stream to use for interpolation (the faster one)
 enum INTERPOLATE_STREAM {
     CAM, IMU, NONE
@@ -33,15 +35,18 @@ geometry_msgs::PoseStamped last_imu_pose, last_cam_pose, filtered_pose_msg;
 // tf Pose objects for calculating interpolated delta
 tf::Pose pose_interpolated, last_pose_interpolated;
 
-// For debug 
-tf::Pose last_pose_interpolated_before;
-
 // Pose accumulator for the faster stream
 std::queue<geometry_msgs::PoseStamped> accumulator; 
 
 // Transformation between IMU and Camera pose frame (FROM Imu TO Cam)
 tf::StampedTransform tf_map_imu2cam, tf_axes_imu2cam;
 ros::Publisher filtered_pose_pub;
+
+// Global defines of origin elements
+tf::Vector3 origin(0,0,0);
+tf::Quaternion rot_zero(0, 0, 0, 1);
+
+uint32_t sequence = 0; // Sequence number for publish msg
 
 inline void waitForAccumulator(double t) 
 {
@@ -62,14 +67,78 @@ inline tf::Transform pose_diff(const geometry_msgs::PoseStamped::ConstPtr &m, ge
 {
     tf::Stamped<tf::Pose> current_pose, last_pose;
     tf::poseStampedMsgToTF(*m, current_pose);
-    tf::poseStampedMsgToTF(last_imu_pose, last_pose);
+    tf::poseStampedMsgToTF(last_pose_msg, last_pose);
     return current_pose.inverseTimes(last_pose);
 } 
+
+void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m) 
+{
+   // Get timestamp from current and wait for accumulator to go past that  
+    ros::Time stamp_current = m->header.stamp;
+    tfScalar t_current = stamp_current.toSec();
+    waitForAccumulator(t_current);
+
+    // Convert geometry_msgs to Quaternion format
+    tf::Quaternion q1, q2, q_res;
+    tf::quaternionMsgToTF(accumulator.front().pose.orientation, q1);
+    tf::quaternionMsgToTF(accumulator.back().pose.orientation, q2);
+    // Convert geometry_msgs Points to tf Vectors
+    tf::Vector3 v1, v2, v_res;
+    tf::pointMsgToTF(accumulator.front().pose.position, v1);
+    tf::pointMsgToTF(accumulator.back().pose.position, v2);
+    // Get time parameter for slerp
+    double t_acc_last = accumulator.front().header.stamp.toSec();
+    double t_acc_latest = accumulator.back().header.stamp.toSec();
+    double t = (t_current - t_acc_last) / (t_acc_latest - t_acc_last);
+            
+    // Interpolate rotation
+    q_res = tf::slerp(q1, q2, t);
+    // Interpolate position
+    v_res = tf::lerp(v1, v2, t);
+    // Construct interpolated result
+    pose_interpolated = tf::Pose(q_res, v_res);
+
+    // rotate interpolated pose via basis change
+    pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
+    pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
+
+    // Calculate measured and interpolated deltas
+    tf::Pose diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
+    tf::Pose diff_measured = pose_diff(m, last_imu_pose);
+
+    // Get rotational distance (angle) and translational distance of deltas
+    double dist_r_int = diff_interpolated.getRotation().angle( rot_zero );
+    double dist_r_mea = diff_measured.getRotation().angle( rot_zero );
+    double dist_t_int = diff_interpolated.getOrigin().distance(origin);
+    double dist_t_mea = diff_measured.getOrigin().distance(origin);
+
+    // Plausibility check, which transform to use
+    tf::Pose tf_delta = diff_interpolated;
+    double arc_length = std::min(dist_r_mea, dist_r_int) * r_sphere;
+    if (fabs(dist_t_mea - arc_length) < fabs(dist_t_int - arc_length))
+        tf_delta = diff_measured;
+
+    // Use calculated delta to update last pose
+    tf::Stamped<tf::Pose> current_pose;
+    tf::poseStampedMsgToTF(filtered_pose_msg, current_pose);
+    current_pose.mult(current_pose, tf_delta.inverse());
+
+    // Construct msg and publish
+    tf::poseStampedTFToMsg(current_pose, filtered_pose_msg);
+    filtered_pose_msg.header.frame_id = "map";
+    filtered_pose_msg.header.stamp = stamp_current;
+    filtered_pose_msg.header.seq = sequence++;
+    filtered_pose_pub.publish( filtered_pose_msg );
+
+    // Prep next iteration
+    last_pose_interpolated = pose_interpolated; 
+}
 
 void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
 {
     // Initialization on first run
     if (!initialized_imu) {
+        filtered_pose_msg = *m;
         last_imu_pose = *m;
         initialized_imu = true;
         return;
@@ -81,67 +150,8 @@ void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
         // Sanity check, can only interpolate if buffer is fully accumulated
         if (accumulator.size() == n_acc) {
 
-            // Get timestamp from current and wait for accumulator to go past that  
-            tfScalar t_current = m->header.stamp.toSec();
-            waitForAccumulator(t_current);
-
-            // Convert geometry_msgs to Quaternion format
-            tf::Quaternion q1, q2, q_res;
-            tf::quaternionMsgToTF(accumulator.front().pose.orientation, q1);
-            tf::quaternionMsgToTF(accumulator.back().pose.orientation, q2);
-            // Convert geometry_msgs Points to tf Vectors
-            tf::Vector3 v1, v2, v_res;
-            tf::pointMsgToTF(accumulator.front().pose.position, v1);
-            tf::pointMsgToTF(accumulator.back().pose.position, v2);
-            // Get time parameter for slerp
-            double t_acc_last = accumulator.front().header.stamp.toSec();
-            double t_acc_latest = accumulator.back().header.stamp.toSec();
-            double t = (t_current - t_acc_last) / (t_acc_latest - t_acc_last);
-            // Interpolate rotation
-            q_res = tf::slerp(q1, q2, t);
-            // Interpolate position
-            v_res = tf::lerp(v1, v2, t);
-            // Construct interpolated result
-            pose_interpolated = tf::Pose(q_res, v_res);
-
-            // Just for debugging
-            tf::Pose diff_interpolated_before = pose_interpolated.inverseTimes(last_pose_interpolated_before);
-            last_pose_interpolated_before = pose_interpolated;
-
-            // rotate interpolated pose via basis change
-            pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
-            pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
-
-            // Calculate interpolated delta
-            tf::Pose diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
-
-            // Calculate measured delta
-            tf::Pose diff_measured = pose_diff(m, last_imu_pose);
-
-            // Just for debugging
-            tf::Vector3 ti = diff_interpolated.getOrigin();
-            tf::Vector3 tm = diff_measured.getOrigin();
-            tf::Vector3 rti = diff_interpolated_before.getOrigin();
-            tf::Vector3 orig(0,0,0);
-            ROS_INFO("Interpolated rotation\t\tr_diff: %f, Measured r_diff: %f", diff_interpolated.getRotation().angle( tf::Quaternion::getIdentity() ), diff_measured.getRotation().angle( tf::Quaternion::getIdentity() ));
-            ROS_INFO("Interpolated diff translation BEFORE:\tx=%f, y=%f, z=%f", rti.x(), rti.y(), rti.z());
-            ROS_INFO("Interpolated diff translation:\t\tx=%f, y=%f, z=%f", ti.x(), ti.y(), ti.z());
-            ROS_INFO("Measured diff translation:\t\tx=%f, y=%f, z=%f\n", tm.x(), tm.y(), tm.z());
-            
-            // tf::poseTFToMsg(pose_interpolated, filtered_pose_msg.pose);
-            // filtered_pose_msg.header = m->header;
-
-          
-            // For Debugging:
-            // if ( t_acc_last < t_current 
-            // && t_current < t_acc_latest) {
-            //     ROS_INFO("OK! IMU_CURRENT: %f, CAM_LAST: %f, CAM_CURRENT: %f", t_current, accumulator.front().header.stamp.toSec(), accumulator.back().header.stamp.toSec());  
-
-            
-            // } else {
-            //     ROS_INFO("WARN: IMU_CURRENT: %f, CAM_LAST: %f, CAM_CURRENT: %f", t_current, accumulator.front().header.stamp.toSec(), accumulator.back().header.stamp.toSec());
-            // }
-            last_pose_interpolated = pose_interpolated;
+            // Use delta filter and publish the pose msg
+            apply_delta_filter_and_publish( m );
         }
 
     // Otherwise, if IMU interpolation is active, push current pose to queue
@@ -172,24 +182,11 @@ void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
         // Sanity check, can only interpolate if buffer is fully accumulated
         if (accumulator.size() == n_acc) {
 
-            // Get timestamp from current and wait for accumulator to go past that 
-            tfScalar t_current = m->header.stamp.toSec();
-            waitForAccumulator(t_current);
+            // Use delta filter and publish the pose msg
+            apply_delta_filter_and_publish( m );
         }
     }
     
-    // Testing, apply correct rotation
-    tf::Stamped<tf::Pose> this_pose;
-    tf::poseStampedMsgToTF(*m, this_pose);
-    tf::Pose rotated_pose;
-
-    rotated_pose.mult(this_pose, tf_axes_imu2cam);
-    rotated_pose.mult(tf_map_imu2cam, rotated_pose);
-    
-    filtered_pose_msg.header = m->header;
-    filtered_pose_msg.header.frame_id = "map";
-    tf::poseTFToMsg(rotated_pose, filtered_pose_msg.pose);
-    filtered_pose_pub.publish( filtered_pose_msg );
     // Save current pose to last pose for next iteration
     last_cam_pose = *m;
 }
@@ -209,6 +206,7 @@ int main(int argc, char** argv)
     nh.param<std::string>("frame_id_cam", frame_id_cam, std::string(frame_id_cam_default));
     nh.param<int>("imu_rate", imu_rate, 125); // Jaspers Code uses 125 Hz by default
     nh.param<int>("cam_rate", cam_rate, 200); // Intels T265 uses 200 Hz by default
+    nh.param<double>("sphere_radius", r_sphere, 0.145);
 
     // Determine accumulation window size of faster stream
     double imu_t = 1.0 / imu_rate, cam_t = 1.0 / cam_rate; 
@@ -226,7 +224,7 @@ int main(int argc, char** argv)
         ROS_INFO("Interpolation disabled.");
     }
     
-    // Initialize variables to false
+    // Initialize variables
     initialized_cam = false;
     initialized_imu = false;
 
