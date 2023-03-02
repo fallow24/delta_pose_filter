@@ -18,10 +18,14 @@
     <param name="imu_rate" type="int" value="$(arg imu_rate)" />
     <param name="cam_rate" type="int" value="$(arg cam_rate)" />
 
+    <!-- Order of transforms: x y z rz ry rx, intrinsic rotation order: rx first, new ry second, new rz third -->
+    
+    <!-- Defines the transform between CAM and IMU coordinate system axes, e.g.: IMU x axis == CAM z axis -->
     <node pkg="tf" type="static_transform_publisher" name="axis_definition_tf_imu_cam" args="0 0 0 1.570796 0 3.141592 axes_cam axes_imu 100" />
-    <node pkg="tf" type="static_transform_publisher" name="static_tf_imu_cam" args="0 0 0 1.570796 0 0 $(arg frame_id_cam) $(arg frame_id_imu) 100" />
-    <!--node pkg="tf" type="static_transform_publisher" name="static_tf_imu_livox" args="0 0 0 1.570796 0 3.141592 map livox_frame 100" /-->
-
+    
+    <!-- Defines the transform between CAM and IMU coordinate systems in the global map frame, e.g.: IMU moves in x, CAM in y -->
+    <node pkg="tf" type="static_transform_publisher" name="global_static_tf_imu_cam" args="0 0 0 1.570796 0 0 $(arg frame_id_cam) $(arg frame_id_imu) 100" />
+    
     <node pkg="delta_pose_filter" type="filter_node" name="delta_pose_filter_node" output="screen" />
 
 </launch>

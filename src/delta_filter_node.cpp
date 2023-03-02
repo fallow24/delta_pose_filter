@@ -33,11 +33,14 @@ geometry_msgs::PoseStamped last_imu_pose, last_cam_pose, filtered_pose_msg;
 // tf Pose objects for calculating interpolated delta
 tf::Pose pose_interpolated, last_pose_interpolated;
 
+// For debug 
+tf::Pose last_pose_interpolated_before;
+
 // Pose accumulator for the faster stream
 std::queue<geometry_msgs::PoseStamped> accumulator; 
 
 // Transformation between IMU and Camera pose frame (FROM Imu TO Cam)
-tf::StampedTransform tf_imu2cam, axes_imu2cam;
+tf::StampedTransform tf_map_imu2cam, tf_axes_imu2cam;
 ros::Publisher filtered_pose_pub;
 
 inline void waitForAccumulator(double t) 
@@ -101,26 +104,30 @@ void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
             // Construct interpolated result
             pose_interpolated = tf::Pose(q_res, v_res);
 
+            // Just for debugging
+            tf::Pose diff_interpolated_before = pose_interpolated.inverseTimes(last_pose_interpolated_before);
+            last_pose_interpolated_before = pose_interpolated;
+
+            // rotate interpolated pose via basis change
+            pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
+            pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
+
             // Calculate interpolated delta
             tf::Pose diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
-            tf::Pose rotated_diff_interpolated;
-            rotated_diff_interpolated.mult(tf_imu2cam, diff_interpolated);
-
-            tf::Vector3 orig(0,0,0);
 
             // Calculate measured delta
             tf::Pose diff_measured = pose_diff(m, last_imu_pose);
 
+            // Just for debugging
             tf::Vector3 ti = diff_interpolated.getOrigin();
-            tf::Vector3 rti = rotated_diff_interpolated.getOrigin();
             tf::Vector3 tm = diff_measured.getOrigin();
-
+            tf::Vector3 rti = diff_interpolated_before.getOrigin();
+            tf::Vector3 orig(0,0,0);
+            ROS_INFO("Interpolated rotation\t\tr_diff: %f, Measured r_diff: %f", diff_interpolated.getRotation().angle( tf::Quaternion::getIdentity() ), diff_measured.getRotation().angle( tf::Quaternion::getIdentity() ));
+            ROS_INFO("Interpolated diff translation BEFORE:\tx=%f, y=%f, z=%f", rti.x(), rti.y(), rti.z());
             ROS_INFO("Interpolated diff translation:\t\tx=%f, y=%f, z=%f", ti.x(), ti.y(), ti.z());
-            ROS_INFO("Rotated interpolated diff translation:\tx=%f, y=%f, z=%f", rti.x(), rti.y(), rti.z());
             ROS_INFO("Measured diff translation:\t\tx=%f, y=%f, z=%f\n", tm.x(), tm.y(), tm.z());
-            // ROS_INFO("Interpolated r_diff: %f, Measured r_diff: %f", diff_interpolated.getRotation().angle( tf::Quaternion::getIdentity() ), diff_measured.getRotation().angle( tf::Quaternion::getIdentity() ));
-            // ROS_INFO("Interpolated t_diff: %f, Measured t_diff: %f", diff_interpolated.getOrigin().distance( orig ), diff_measured.getOrigin().distance( orig ));
-
+            
             // tf::poseTFToMsg(pose_interpolated, filtered_pose_msg.pose);
             // filtered_pose_msg.header = m->header;
 
@@ -176,8 +183,8 @@ void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
     tf::poseStampedMsgToTF(*m, this_pose);
     tf::Pose rotated_pose;
 
-    rotated_pose.mult(this_pose, axes_imu2cam);
-    rotated_pose.mult(tf_imu2cam, rotated_pose);
+    rotated_pose.mult(this_pose, tf_axes_imu2cam);
+    rotated_pose.mult(tf_map_imu2cam, rotated_pose);
     
     filtered_pose_msg.header = m->header;
     filtered_pose_msg.header.frame_id = "map";
@@ -227,16 +234,25 @@ int main(int argc, char** argv)
     tf::TransformListener tf_listener;
     tf_listener.waitForTransform(frame_id_imu, frame_id_cam, ros::Time(0), ros::Duration(1.0)); // wait 5 seconds for tf
     tf_listener.waitForTransform(std::string("axes_cam"), std::string("axes_imu"), ros::Time(0), ros::Duration(1.0)); // wait 5 seconds for tf
-    tf_listener.lookupTransform(frame_id_imu, frame_id_cam, ros::Time(0), tf_imu2cam);
-    tf_listener.lookupTransform(std::string("axes_cam"), std::string("axes_imu"), ros::Time(0), axes_imu2cam);
-    ROS_INFO("Found transform cam -> imu:\n[x,y,z]=%f, %f, %f\n[x,y,z,w]=%f, %f, %f, %f", 
-        tf_imu2cam.getOrigin().x(),
-        tf_imu2cam.getOrigin().y(),
-        tf_imu2cam.getOrigin().z(),
-        tf_imu2cam.getRotation().x(),
-        tf_imu2cam.getRotation().y(),
-        tf_imu2cam.getRotation().z(),
-        tf_imu2cam.getRotation().w()
+    tf_listener.lookupTransform(frame_id_imu, frame_id_cam, ros::Time(0), tf_map_imu2cam);
+    tf_listener.lookupTransform(std::string("axes_cam"), std::string("axes_imu"), ros::Time(0), tf_axes_imu2cam);
+    ROS_INFO("Found global transform imu -> cam:\n[x,y,z]=%f, %f, %f\n[x,y,z,w]=%f, %f, %f, %f", 
+        tf_map_imu2cam.getOrigin().x(),
+        tf_map_imu2cam.getOrigin().y(),
+        tf_map_imu2cam.getOrigin().z(),
+        tf_map_imu2cam.getRotation().x(),
+        tf_map_imu2cam.getRotation().y(),
+        tf_map_imu2cam.getRotation().z(),
+        tf_map_imu2cam.getRotation().w()
+    );
+    ROS_INFO("Found axes definition transform imu -> cam:\n[x,y,z]=%f, %f, %f\n[x,y,z,w]=%f, %f, %f, %f", 
+        tf_axes_imu2cam.getOrigin().x(),
+        tf_axes_imu2cam.getOrigin().y(),
+        tf_axes_imu2cam.getOrigin().z(),
+        tf_axes_imu2cam.getRotation().x(),
+        tf_axes_imu2cam.getRotation().y(),
+        tf_axes_imu2cam.getRotation().z(),
+        tf_axes_imu2cam.getRotation().w()
     );
 
     // Publishers and subscribers
