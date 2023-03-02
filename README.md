@@ -1,6 +1,7 @@
 # delta_pose_filter
 
 This is an unconventional pose filter that listens to two unreliable pose streams (describing the same motion) and fuse them together into one, more reliable pose stream. My implementation assumes that the sensors are located inside a rolling spherical robot. However, the filter is not limited to only spherical robots, but can be applied to any scenario where two pose streams appear.
+Note that the filter works well even if the frequency of both pose streams is not the same. The filter will publish in the speed of the slower stream, and use interpolated information of the faster stream for pose fusion. 
 
 ## How to install 
 
