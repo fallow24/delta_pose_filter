@@ -40,7 +40,12 @@ std::queue<geometry_msgs::PoseStamped> accumulator;
 
 // Transformation between IMU and Camera pose frame (FROM Imu TO Cam)
 tf::StampedTransform tf_map_imu2cam, tf_axes_imu2cam;
-ros::Publisher filtered_pose_pub;
+ros::Publisher filtered_pose_pub; 
+
+// Debug stuff
+ros::Publisher debug_pose_pub;
+geometry_msgs::PoseStamped debug_pose_msg;
+bool publish_debug_topic;
 
 // Global defines of origin elements
 tf::Vector3 origin(0,0,0);
@@ -114,8 +119,8 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
 
     // Plausibility check, which transform to use
     tf::Pose tf_delta = diff_interpolated;
-    double arc_length = std::min(dist_r_mea, dist_r_int) * r_sphere;
-    if (fabs(dist_t_mea - arc_length) < fabs(dist_t_int - arc_length))
+    //double arc_length = std::min(dist_r_mea, dist_r_int) * r_sphere;
+    if (dist_t_mea < dist_t_int)
         tf_delta = diff_measured;
 
     // Use calculated delta to update last pose
@@ -128,6 +133,13 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     filtered_pose_msg.header.frame_id = "map";
     filtered_pose_msg.header.stamp = stamp_current;
     filtered_pose_msg.header.seq = sequence++;
+
+    // For rotation, interpolate between cam and imu 
+    tf::Quaternion q_measured, q_interpolated;
+    tf::quaternionMsgToTF(m->pose.orientation, q_measured);
+    q_interpolated = pose_interpolated.getRotation();
+    // TODO: replace 0.5 with confidence gain
+    tf::quaternionTFToMsg(tf::slerp(q_measured, q_interpolated, 0.5), filtered_pose_msg.pose.orientation);
     filtered_pose_pub.publish( filtered_pose_msg );
 
     // Prep next iteration
@@ -187,6 +199,23 @@ void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
         }
     }
     
+    // Debug msgs
+    if (publish_debug_topic) 
+    {
+         // Testing, apply correct rotation
+        tf::Stamped<tf::Pose> this_pose;
+        tf::poseStampedMsgToTF(*m, this_pose);
+        tf::Pose rotated_pose;
+
+        rotated_pose.mult(this_pose, tf_axes_imu2cam);
+        rotated_pose.mult(tf_map_imu2cam, rotated_pose);
+        
+        debug_pose_msg.header = m->header;
+        debug_pose_msg.header.frame_id = "map";
+        tf::poseTFToMsg(rotated_pose, debug_pose_msg.pose);
+        debug_pose_pub.publish( debug_pose_msg );
+    }
+
     // Save current pose to last pose for next iteration
     last_cam_pose = *m;
 }
@@ -207,6 +236,7 @@ int main(int argc, char** argv)
     nh.param<int>("imu_rate", imu_rate, 125); // Jaspers Code uses 125 Hz by default
     nh.param<int>("cam_rate", cam_rate, 200); // Intels T265 uses 200 Hz by default
     nh.param<double>("sphere_radius", r_sphere, 0.145);
+    nh.param<bool>("debug_topics", publish_debug_topic, false);
 
     // Determine accumulation window size of faster stream
     double imu_t = 1.0 / imu_rate, cam_t = 1.0 / cam_rate; 
@@ -257,7 +287,8 @@ int main(int argc, char** argv)
     ros::Subscriber cam_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
     ros::Subscriber imu_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
     filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>(topic_publish, 1000);
-    
+    if (publish_debug_topic) debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/delta/debug", 1000);
+
     // Main processing loop, wait for callbacks to happen
     while(ros::ok()) {
         // TODO: add loop rate based on publish frequency

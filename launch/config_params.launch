@@ -9,6 +9,7 @@
     <arg name="imu_rate" value="125" /> <!-- in Hz -->
     <arg name="cam_rate" value="200" /> <!-- in Hz -->
     <arg name="sphere_radius" value="0.145" /> <!-- in m -->
+    <arg name="debug_topics" value="true" /> 
 
     <!-- Convert arguments to rosparam server -->
     <param name="topic_publish" type="string" value="$(arg topic_publish)" />
@@ -19,6 +20,7 @@
     <param name="imu_rate" type="int" value="$(arg imu_rate)" />
     <param name="cam_rate" type="int" value="$(arg cam_rate)" />
     <param name="sphere_radius" type="double" value="$(arg sphere_radius)" /> 
+    <param name="debug_topics" type="bool" value="$(arg debug_topics)" /> 
 
     <!-- Order of transforms: x y z rz ry rx, intrinsic rotation order: rx first, new ry second, new rz third -->
     

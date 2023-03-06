@@ -15,16 +15,6 @@ find_package(catkin REQUIRED COMPONENTS
   tf2
 )
 
-if (WIN32)
-find_package(realsense2 CONFIG REQUIRED)
-else()
-find_package(realsense2 2.50.0)
-endif()
-
-if(NOT realsense2_FOUND)
-    message(FATAL_ERROR "\n\n Intel RealSense SDK 2.0 is missing, please install it from https://github.com/IntelRealSense/librealsense/releases\n\n")
-endif()
-
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
