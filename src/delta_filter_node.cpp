@@ -119,16 +119,22 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
 
     // Plausibility check, which transform to use
     tf::Pose tf_delta = diff_interpolated;
-    //double arc_length = std::min(dist_r_mea, dist_r_int) * r_sphere;
-    if (dist_t_mea < dist_t_int)
+    double arc_length = std::max(dist_r_mea , dist_r_int) * r_sphere;
+    if (fabs(dist_t_mea) < fabs(dist_t_int)) 
         tf_delta = diff_measured;
+
+    // TODO: ADD ROLLING MOTION DETECTION CONSTRAINT!
+    // For translation, use downscaling according to arc length of rotation 
+    double scale_factor = arc_length / tf_delta.getOrigin().distance(origin);
+    tf::Vector3 scaled_translation = scale_factor * tf_delta.getOrigin();
+    tf_delta.setOrigin(scaled_translation);
 
     // Use calculated delta to update last pose
     tf::Stamped<tf::Pose> current_pose;
     tf::poseStampedMsgToTF(filtered_pose_msg, current_pose);
     current_pose.mult(current_pose, tf_delta.inverse());
 
-    // Construct msg and publish
+    // Construct msg
     tf::poseStampedTFToMsg(current_pose, filtered_pose_msg);
     filtered_pose_msg.header.frame_id = "map";
     filtered_pose_msg.header.stamp = stamp_current;
@@ -138,10 +144,11 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     tf::Quaternion q_measured, q_interpolated;
     tf::quaternionMsgToTF(m->pose.orientation, q_measured);
     q_interpolated = pose_interpolated.getRotation();
-    // TODO: replace 0.5 with confidence gain
     tf::quaternionTFToMsg(tf::slerp(q_measured, q_interpolated, 0.5), filtered_pose_msg.pose.orientation);
+    
+    // Publish
     filtered_pose_pub.publish( filtered_pose_msg );
-
+    
     // Prep next iteration
     last_pose_interpolated = pose_interpolated; 
 }

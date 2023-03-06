@@ -8,7 +8,7 @@
     <arg name="frame_id_cam" value="static_cam" />
     <arg name="imu_rate" value="125" /> <!-- in Hz -->
     <arg name="cam_rate" value="200" /> <!-- in Hz -->
-    <arg name="sphere_radius" value="0.145" /> <!-- in m -->
+    <arg name="sphere_radius" value="0.155" /> <!-- in m -->
     <arg name="debug_topics" value="true" /> 
 
     <!-- Convert arguments to rosparam server -->
