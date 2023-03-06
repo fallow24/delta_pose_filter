@@ -124,6 +124,7 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
         tf_delta = diff_measured;
 
     // TODO: ADD ROLLING MOTION DETECTION CONSTRAINT!
+    // TODO: ADD TERM PROPORTIONAL TO SPEED FOR UPSCALING
     // For translation, use downscaling according to arc length of rotation 
     double scale_factor = arc_length / tf_delta.getOrigin().distance(origin);
     tf::Vector3 scaled_translation = scale_factor * tf_delta.getOrigin();
