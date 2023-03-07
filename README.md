@@ -56,4 +56,6 @@ Use the config file to define
 3. If those two poses dont have the same axis definitions, adjust Q
 4. If those two poses dont move in the same principal direction, adjust P 
 
+Note that the origins DO NOT HAVE TO BE ALIGNED.
+As this filter only looks at the "deltas", i.e. pose changes, it will still work.
 ![Debug_example](https://github.com/fallow24/delta_pose_filter/blob/master/img/debug_topic.jpg?raw=true)
