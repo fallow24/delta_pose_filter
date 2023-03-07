@@ -10,7 +10,7 @@ This interpolated information from one stream is combined with the so called pos
 The name "Delta filter" stems from the fact that the filter consideres the transformation changes (= deltas) of both pose streams.
 The current filtered pose is constantly updated using the deltas.
 Both deltas are compared to an estimated model delta from a motion model.
-The underlying motion model is thatof a rolling ball, and its delta estimation uses information from both the interpolated and measured deltas.
+The underlying motion model is that of a rolling ball, and the model delta estimation uses information from both the interpolated and measured deltas.
 To construct the filtered pose, the interpolation-, measurement-, and model-deltas are fused together using an outlier robust weighted geometric mean, which is often used in statistics.
 
 ![Example](https://github.com/fallow24/delta_pose_filter/blob/master/img/delta_example1_pub.jpg?raw=true)
