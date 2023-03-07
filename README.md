@@ -6,6 +6,9 @@ However, the filter is not limited to only spherical robots, but can be applied 
 Note that the filter works well even if the frequency of both pose streams is not the same. 
 The filter will publish in the speed of the slower stream, and use interpolated information of the faster stream for pose fusion. 
 
+This interpolated information from one stream is combined with the so called pose "measurement" on the other stream, as well as an underlying motion model.
+Interpolation, measurement, and model are fused together using an outlier robust weighted geometric mean, which is often used in statistics. 
+
 ![Example](https://github.com/fallow24/delta_pose_filter/blob/master/img/delta_example1_pub.jpg?raw=true)
 
 ## ROS Dependencies
