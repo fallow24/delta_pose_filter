@@ -9,10 +9,8 @@ project(delta_pose_filter)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
-  sensor_msgs
   roscpp
   tf
-  tf2
 )
 
 

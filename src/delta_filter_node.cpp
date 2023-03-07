@@ -1,7 +1,6 @@
 #include <ros/ros.h>
 
 #include <geometry_msgs/PoseStamped.h>
-#include <sensor_msgs/Imu.h>
 #include <tf/transform_broadcaster.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_listener.h>
@@ -124,7 +123,11 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
 
     // Calculate measured and interpolated deltas
     tf::Pose diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
-    tf::Pose diff_measured = pose_diff(m, last_imu_pose);
+    tf::Pose diff_measured;
+    if (interpolate == CAM)
+        diff_measured = pose_diff(m, last_imu_pose);
+    else 
+        diff_measured = pose_diff(m, last_cam_pose);
 
     // Get rotational distance (angle) and translational distance of deltas
     double dist_r_int = diff_interpolated.getRotation().angle( rot_zero );
