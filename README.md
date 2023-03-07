@@ -1,4 +1,4 @@
-# delta_pose_filter
+# 6-DoF "Delta" pose filter for sensor fusion
 
 This is a ROS program that implements an unconventional pose filter that listens to two unreliable pose streams (describing the same motion) and fuse them together into one, more reliable pose stream. 
 My implementation assumes that the sensors are located inside a rolling spherical robot. 
