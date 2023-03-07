@@ -6,6 +6,8 @@ However, the filter is not limited to only spherical robots, but can be applied 
 Note that the filter works well even if the frequency of both pose streams is not the same. 
 The filter will publish in the speed of the slower stream, and use interpolated information of the faster stream for pose fusion. 
 
+![Example](https://github.com/fallow24/delta_pose_filter/blob/master/img/delta_example1_pub.jpg?raw=true)
+
 ## ROS Dependencies
 Tested on Ubuntu 20.04 on ROS Noetic.
 The program has a minimal dependency list:
@@ -54,4 +56,4 @@ Use the config file to define
 3. If those two poses dont have the same axis definitions, adjust Q
 4. If those two poses dont move in the same principal direction, adjust P 
 
-
+![Debug_example](https://github.com/fallow24/delta_pose_filter/blob/master/img/debug_topic.jpg?raw=true)
