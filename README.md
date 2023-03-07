@@ -7,7 +7,11 @@ Note that the filter works well even if the frequency of both pose streams is no
 The filter will publish in the speed of the slower stream, and use interpolated information of the faster stream for pose fusion. 
 
 This interpolated information from one stream is combined with the so called pose "measurement" on the other stream, as well as an underlying motion model.
-Interpolation, measurement, and model are fused together using an outlier robust weighted geometric mean, which is often used in statistics. 
+Interpolation, measurement, and model are fused together using an outlier robust weighted geometric mean, which is often used in statistics.
+
+The name "Delta filter" stems from the fact that the filter consideres the transformation changes (= deltas) of both pose streams.
+Both deltas are compared to an estimated model delta from a motion model.
+The underlying motion model is that of a rolling ball, and its delta estimation uses information from both the interpolated and measured deltas.
 
 ![Example](https://github.com/fallow24/delta_pose_filter/blob/master/img/delta_example1_pub.jpg?raw=true)
 
