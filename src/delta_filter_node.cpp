@@ -76,6 +76,21 @@ inline tf::Transform pose_diff(const geometry_msgs::PoseStamped::ConstPtr &m, ge
     return current_pose.inverseTimes(last_pose);
 } 
 
+inline double max(double a, double b, double c)
+{
+    return std::max(std::max(a,b), c);
+}
+
+inline double min(double a, double b, double c)
+{
+    return std::min(std::min(a,b), c);
+}
+
+inline double mid(double a, double b, double c)
+{
+    return std::min( std::max(a,b), std::max(b,c) );
+}
+
 void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m) 
 {
    // Get timestamp from current and wait for accumulator to go past that  
@@ -118,14 +133,25 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     double dist_t_mea = diff_measured.getOrigin().distance(origin);
 
     // Plausibility check, which transform to use
-    tf::Pose tf_delta = diff_interpolated;
-    double arc_length = std::max(dist_r_mea , dist_r_int) * r_sphere;
-    if (fabs(dist_t_mea) < fabs(dist_t_int)) 
-        tf_delta = diff_measured;
+    tf::Pose tf_delta;
+    double dist_t_model = std::max(dist_r_mea , dist_r_int) * r_sphere;
+    if (fabs(dist_t_mea - dist_t_model) < fabs(dist_t_int - dist_t_model)) 
+        tf_delta = diff_measured; // Use measurement if its closer to model
+    else { // Otherwise, use mean of both transforms:
+        tf::Quaternion delta_rot = tf::slerp(diff_measured.getRotation(), diff_interpolated.getRotation(), 0.5);
+        tf::Vector3 delta_trans = tf::lerp(diff_measured.getOrigin(), diff_interpolated.getOrigin(), 0.5); 
+        tf_delta = tf::Pose(delta_rot, delta_trans);
+    }
 
-    // TODO: ADD ROLLING MOTION DETECTION CONSTRAINT!
-    // TODO: ADD TERM PROPORTIONAL TO SPEED FOR UPSCALING
-    // For translation, use downscaling according to arc length of rotation 
+    // ESTIMATE "REAL" ARC LENGTH USING GEOMETRIC MEAN WITH SIMILARITY SCORES
+    double alpha = mid(dist_t_int, dist_t_mea, dist_t_model) - min(dist_t_int, dist_t_mea, dist_t_model);
+    double beta = max(dist_t_int, dist_t_mea, dist_t_model) - mid(dist_t_int, dist_t_mea, dist_t_model);
+    double w_int = fabs( (dist_t_int - alpha - beta)/(alpha + beta) );
+    double w_mea = fabs( (dist_t_mea - alpha - beta)/(alpha + beta) );
+    double w_model = fabs( (dist_t_model - alpha - beta)/(alpha + beta) );
+    double arc_length = pow( pow(dist_t_int, w_int)*pow(dist_t_mea, w_mea)*pow(dist_t_model, w_model), 1.0/(w_int+w_mea+w_model));
+    
+    // For translation, use downscaling according to estimated arc length of rotation 
     double scale_factor = arc_length / tf_delta.getOrigin().distance(origin);
     tf::Vector3 scaled_translation = scale_factor * tf_delta.getOrigin();
     tf_delta.setOrigin(scaled_translation);
