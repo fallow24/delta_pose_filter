@@ -14,6 +14,7 @@ The underlying motion model is that of a rolling ball, and the model delta estim
 To construct the filtered pose, the interpolation-, measurement-, and model-deltas are fused together using an outlier robust weighted geometric mean, which is often used in statistics.
 
 ![Example](https://github.com/fallow24/delta_pose_filter/blob/master/img/delta_example1_pub.jpg?raw=true)
+![Example2](https://github.com/fallow24/delta_pose_filter/blob/master/img/metascan.png)
 
 ## ROS Dependencies
 Tested on Ubuntu 20.04 on ROS Noetic.
