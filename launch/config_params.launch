@@ -1,7 +1,7 @@
 <launch> 
     
     <!-- Arguments, use this to set config parameters -->
-    <arg name="topic_publish" value="/delta/pose" />
+    <arg name="topic_publish" value="/delta/pose2" />
     <arg name="topic_pose_imu" value="/posePub_merged" />
     <arg name="topic_pose_cam" value="/camera/pose" />
     <arg name="frame_id_imu" value="static_imu" />
@@ -10,6 +10,8 @@
     <arg name="cam_rate" value="200" /> <!-- in Hz -->
     <arg name="sphere_radius" value="0.145" /> <!-- in m -->
     <arg name="debug_topics" value="true" /> 
+    <!-- arg name="assume_flat_floor" value="true" -->
+    <!-- arg name="max_upscaling_factor" value="true" -->
 
     <!-- Convert arguments to rosparam server -->
     <param name="topic_publish" type="string" value="$(arg topic_publish)" />
@@ -30,6 +32,6 @@
     <!-- Defines the transform between CAM and IMU coordinate systems in the global map frame, e.g.: IMU moves in x, CAM in y -->
     <node pkg="tf" type="static_transform_publisher" name="global_static_tf_imu_cam" args="0 0 0 1.570796 0 0 $(arg frame_id_cam) $(arg frame_id_imu) 100" />
     
-    <node pkg="delta_pose_filter" type="filter_node" name="delta_pose_filter_node" output="screen" />
+    <node pkg="delta_pose_filter" type="filter_node" name="delta_pose_filter_node2" output="screen" />
 
 </launch>

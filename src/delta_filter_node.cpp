@@ -53,11 +53,12 @@ tf::Quaternion rot_zero(0, 0, 0, 1);
 uint32_t sequence = 0; // Sequence number for publish msg
 
 inline void waitForAccumulator(double t) 
-{
+{   
     while( !(accumulator.front().header.stamp.toSec() < t 
       && t < accumulator.back().header.stamp.toSec()) 
       && ros::ok() ) 
         ros::spinOnce();
+
 }
 
 inline void pushToAccumulator(const geometry_msgs::PoseStamped::ConstPtr &m)
@@ -92,9 +93,10 @@ inline double mid(double a, double b, double c)
 
 void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m) 
 {
-   // Get timestamp from current and wait for accumulator to go past that  
+    // Get timestamp from current and wait for accumulator to go past that  
     ros::Time stamp_current = m->header.stamp;
     tfScalar t_current = stamp_current.toSec();
+
     waitForAccumulator(t_current);
 
     // Convert geometry_msgs to Quaternion format
@@ -122,12 +124,14 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
 
     // Calculate measured and interpolated deltas
-    tf::Pose diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
     tf::Pose diff_measured;
     if (interpolate == CAM)
         diff_measured = pose_diff(m, last_imu_pose);
     else 
         diff_measured = pose_diff(m, last_cam_pose);
+    
+    tf::Pose diff_interpolated;
+    diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
 
     // Get rotational distance (angle) and translational distance of deltas
     double dist_r_int = diff_interpolated.getRotation().angle( rot_zero );
@@ -138,11 +142,11 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     // Plausibility check, which transform to use
     tf::Pose tf_delta;
     double dist_t_model = std::max(dist_r_mea , dist_r_int) * r_sphere;
-    if (fabs(dist_t_mea - dist_t_model) < fabs(dist_t_int - dist_t_model)) 
+    if (fabs(dist_t_mea - dist_t_model) < fabs(dist_t_int - dist_t_model) ) {
         tf_delta = diff_measured; // Use measurement if its closer to model
-    else { // Otherwise, use mean of both transforms:
+    } else { // Otherwise, use mean of both transforms:
         tf::Quaternion delta_rot = tf::slerp(diff_measured.getRotation(), diff_interpolated.getRotation(), 0.5);
-        tf::Vector3 delta_trans = tf::lerp(diff_measured.getOrigin(), diff_interpolated.getOrigin(), 0.5); 
+        tf::Vector3 delta_trans = diff_measured.getOrigin(); // tf::lerp(diff_measured.getOrigin(), diff_interpolated.getOrigin(), 0.5);
         tf_delta = tf::Pose(delta_rot, delta_trans);
     }
 
@@ -155,7 +159,7 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     double arc_length = pow( pow(dist_t_int, w_int)*pow(dist_t_mea, w_mea)*pow(dist_t_model, w_model), 1.0/(w_int+w_mea+w_model));
     
     // For translation, use downscaling according to estimated arc length of rotation 
-    double scale_factor = arc_length / tf_delta.getOrigin().distance(origin);
+    double scale_factor = std::min(1.0, arc_length / tf_delta.getOrigin().distance(origin));
     tf::Vector3 scaled_translation = scale_factor * tf_delta.getOrigin();
     tf_delta.setOrigin(scaled_translation);
 
@@ -174,7 +178,15 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     tf::Quaternion q_measured, q_interpolated;
     tf::quaternionMsgToTF(m->pose.orientation, q_measured);
     q_interpolated = pose_interpolated.getRotation();
-    tf::quaternionTFToMsg(tf::slerp(q_measured, q_interpolated, 0.5), filtered_pose_msg.pose.orientation);
+    tf::Quaternion rotation = tf::slerp(q_measured, q_interpolated, 0.5);
+    
+    // Fix yaw angle
+    tf::Matrix3x3 m_measured(rotation), m_interpolated(q_interpolated);
+    double rm, pm, ym, ri, pi, yi;
+    m_measured.getRPY(rm, pm, ym);
+    m_interpolated.getRPY(ri, pi, yi);
+    rotation.setRPY(rm, pm, yi);
+    tf::quaternionTFToMsg(rotation, filtered_pose_msg.pose.orientation);
     
     // Publish
     filtered_pose_pub.publish( filtered_pose_msg );
@@ -187,6 +199,7 @@ void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
 {
     // Initialization on first run
     if (!initialized_imu) {
+        
         filtered_pose_msg = *m;
         last_imu_pose = *m;
         initialized_imu = true;
@@ -216,6 +229,7 @@ void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
 {
     // Initialization on first run
     if (!initialized_cam) {
+        ROS_INFO("INITIALIZED CAM");
         last_cam_pose = *m;
         initialized_cam = true;
         return;
