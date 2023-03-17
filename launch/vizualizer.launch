@@ -1,0 +1,19 @@
+<launch>
+
+    <!-- Arguments, use this to set config parameters -->
+    <arg name="topic_listen" value="/delta/pose" />
+    <arg name="global_frame" value="map" />
+    <arg name="pose_frame" value="imu" />
+    <arg name="lidar_frame" value="livox_frame" />
+
+    <!-- Convert arguments to rosparam server -->
+    <param name="topic_listen" type="string" value="$(arg topic_listen)" />
+    <param name="global_frame" type="string" value="$(arg global_frame)" />
+    <param name="pose_frame" type="string" value="$(arg pose_frame)" />
+
+    <node pkg="tf" type="static_transform_publisher" name="lidar2imu_tf_broadcaster" args="0 0 0 1.570796 0 3.141592 $(arg pose_frame) $(arg lidar_frame) 100" /> 
+
+    <node pkg="delta_pose_filter" type="vizualizer" name="delta_tf_lidar_pub" output="screen" />
+
+
+</launch> 

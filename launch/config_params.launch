@@ -1,7 +1,7 @@
 <launch> 
     
     <!-- Arguments, use this to set config parameters -->
-    <arg name="topic_publish" value="/delta/pose2" />
+    <arg name="topic_publish" value="/delta/pose" />
     <arg name="topic_pose_imu" value="/posePub_merged" />
     <arg name="topic_pose_cam" value="/camera/pose" />
     <arg name="frame_id_imu" value="static_imu" />

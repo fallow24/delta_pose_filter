@@ -9,6 +9,7 @@ project(delta_pose_filter)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
+  sensor_msgs
   roscpp
   tf
 )
@@ -135,6 +136,7 @@ include_directories(
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 add_executable(filter_node src/delta_filter_node.cpp)
+add_executable(vizualizer src/delta_tf_lidar_pub.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -148,6 +150,10 @@ add_executable(filter_node src/delta_filter_node.cpp)
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(filter_node
+  ${catkin_LIBRARIES}
+)
+
+target_link_libraries(vizualizer
   ${catkin_LIBRARIES}
 )
 
