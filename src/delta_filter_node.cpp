@@ -1,4 +1,5 @@
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
 
 #include <geometry_msgs/PoseStamped.h>
 #include <tf/transform_broadcaster.h>
@@ -36,6 +37,8 @@ tf::Pose pose_interpolated, last_pose_interpolated;
 
 // Pose accumulator for the faster stream
 std::queue<geometry_msgs::PoseStamped> accumulator; 
+// Callback queue for the faster stream. For more than 2 estimators this should be a vector of CallbackQueues.
+ros::CallbackQueue callbacks_fast;
 
 // Transformation between IMU and Camera pose frame (FROM Imu TO Cam)
 tf::StampedTransform tf_map_imu2cam, tf_axes_imu2cam;
@@ -54,10 +57,15 @@ uint32_t sequence = 0; // Sequence number for publish msg
 
 inline void waitForAccumulator(double t) 
 {   
+    // Wait for the queue to be not empty
+    while (accumulator.size() < 1 && ros::ok())
+        callbacks_fast.callOne( ros::WallDuration() );
+
+    // Wait for the query time to be between the accumulator times
     while( !(accumulator.front().header.stamp.toSec() < t 
       && t < accumulator.back().header.stamp.toSec()) 
       && ros::ok() ) 
-        ros::spinOnce();
+        callbacks_fast.callOne( ros::WallDuration() );
 
 }
 
@@ -276,6 +284,10 @@ int main(int argc, char** argv)
     ros::init(argc, argv, "delta_filter_node");
     ros::NodeHandle nh;
 
+    // Nodehandle for the faster stream (should be vector for more than 2 estimators)
+    ros::NodeHandle nh_fast;
+    nh_fast.setCallbackQueue(&callbacks_fast);
+
     // Topic params 
     std::string topic_publish, topic_pose_imu, topic_pose_cam;
     std::string frame_id_imu, frame_id_cam;
@@ -335,14 +347,24 @@ int main(int argc, char** argv)
     );
 
     // Publishers and subscribers
-    ros::Subscriber cam_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
-    ros::Subscriber imu_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
+    ros::Subscriber cam_pose_sub, imu_pose_sub;
+    if (interpolate == IMU) {
+        cam_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
+        imu_pose_sub = nh_fast.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
+    } else if (interpolate == CAM) {
+        cam_pose_sub = nh_fast.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
+        imu_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
+    } else if (interpolate == NONE) {
+        cam_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
+        imu_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
+    }
+    
+    
     filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>(topic_publish, 1000);
     if (publish_debug_topic) debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/delta/debug", 1000);
 
     // Main processing loop, wait for callbacks to happen
     while(ros::ok()) {
-        // TODO: add loop rate based on publish frequency
         ros::spinOnce();
     }
 
