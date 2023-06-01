@@ -64,8 +64,12 @@ inline void waitForAccumulator(double t)
     // Wait for the query time to be between the accumulator times
     while( !(accumulator.front().header.stamp.toSec() < t 
       && t < accumulator.back().header.stamp.toSec()) 
-      && ros::ok() ) 
-        callbacks_fast.callOne( ros::WallDuration() );
+      && ros::ok() ) {
+
+        // If interpolation is disabled, all msgs have the same queue
+        if (interpolate == NONE) ros::spinOnce();
+        else callbacks_fast.callOne( ros::WallDuration() );
+    }   
 
 }
 
