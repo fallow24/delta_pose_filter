@@ -49,9 +49,10 @@ ros::Publisher debug_pose_pub;
 geometry_msgs::PoseStamped debug_pose_msg;
 bool publish_debug_topic;
 
-// Global defines of origin elements
+// Global defines as objects on heap 
 tf::Vector3 origin(0,0,0);
 tf::Quaternion rot_zero(0, 0, 0, 1);
+const double small_number = 0.00001;
 
 uint32_t sequence = 0; // Sequence number for publish msg
 
@@ -146,10 +147,11 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
 
     // Get rotational distance (angle) and translational distance of deltas
-    double dist_r_int = diff_interpolated.getRotation().angle( rot_zero );
-    double dist_r_mea = diff_measured.getRotation().angle( rot_zero );
-    double dist_t_int = diff_interpolated.getOrigin().distance(origin);
-    double dist_t_mea = diff_measured.getOrigin().distance(origin);
+    // TODO: angle( ) function returns HALF the angle! Multiply by 2!
+    double dist_r_int = 2*diff_interpolated.getRotation().angle( rot_zero ); //*2
+    double dist_r_mea = 2*diff_measured.getRotation().angle( rot_zero ); //*2
+    double dist_t_int = diff_interpolated.getOrigin().distance(origin); // these will return positive!
+    double dist_t_mea = diff_measured.getOrigin().distance(origin); // these will return positive!
 
     // Plausibility check, which transform to use
     tf::Pose tf_delta;
@@ -165,9 +167,10 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     // ESTIMATE "REAL" ARC LENGTH USING GEOMETRIC MEAN WITH SIMILARITY SCORES
     double alpha = mid(dist_t_int, dist_t_mea, dist_t_model) - min(dist_t_int, dist_t_mea, dist_t_model);
     double beta = max(dist_t_int, dist_t_mea, dist_t_model) - mid(dist_t_int, dist_t_mea, dist_t_model);
-    double w_int = fabs( (dist_t_int - alpha - beta)/(alpha + beta) );
-    double w_mea = fabs( (dist_t_mea - alpha - beta)/(alpha + beta) );
-    double w_model = fabs( (dist_t_model - alpha - beta)/(alpha + beta) );
+    // TODO: FIXME division trough 0! (fix: alpha, beta are both >= 0 --> small number will prevent division through 0) 
+    double w_int = fabs( (dist_t_int - alpha - beta - small_number)/(alpha + beta + small_number) );
+    double w_mea = fabs( (dist_t_mea - alpha - beta - small_number)/(alpha + beta + small_number) );
+    double w_model = fabs( (dist_t_model - alpha - beta - small_number)/(alpha + beta + small_number) );
     double arc_length = pow( pow(dist_t_int, w_int)*pow(dist_t_mea, w_mea)*pow(dist_t_model, w_model), 1.0/(w_int+w_mea+w_model));
     
     // For translation, use downscaling according to estimated arc length of rotation 
