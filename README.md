@@ -14,7 +14,6 @@ The underlying motion model is that of a rolling ball, and the model delta estim
 To construct the filtered pose, the interpolation-, measurement-, and model-deltas are fused together using an outlier robust weighted geometric mean, which is often used in statistics.
 
 ![Example](https://github.com/fallow24/delta_pose_filter/blob/master/img/delta_example1_pub.jpg?raw=true)
-![Example2](https://github.com/fallow24/delta_pose_filter/blob/master/img/metascan.png)
 
 ## ROS Dependencies
 Tested on Ubuntu 20.04 on ROS Noetic.
@@ -67,3 +66,17 @@ Use the config file to define
 Note that the origins DO NOT HAVE TO BE ALIGNED.
 As this filter only looks at the "deltas", i.e. pose changes, it will still work.
 ![Debug_example](https://github.com/fallow24/delta_pose_filter/blob/master/img/debug_topic.jpg?raw=true)
+
+## Cite us 
+A corresponding publication will soon be added.
+This work is to be presented at the European Conference on Mobile Robotics (ECMR), held in Coimbra, Portugal on 4-7 Sept.
+```
+@InProceedings{ecmr2023delta,
+  author       = {Fabian Arzberger and Fabian Wiecha and Jasper Zevering and Julian Rothe and Dorit Borrmann and Sergio Montenegro and Andreas N{u\"}chter},
+  title        = {Delta filter -- robust visual-inertial pose estimation in real-time: A multi-trajectory filter on a spherical mobile mapping system},
+  year         = {2023},
+  month        = {September},
+  address      = {Coimbra, Portugal},
+  publisher    = {Accepted for publication on the European Conference on Mobile Robots (ECMR) 2023}
+}
+```
