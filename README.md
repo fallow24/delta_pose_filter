@@ -6,6 +6,8 @@ However, the filter is not limited to only spherical robots, but can be applied 
 Note that the filter works well even if the frequency of both pose streams is not the same. 
 The filter will publish in the speed of the slower stream, and use interpolated information of the faster stream for pose fusion. 
 
+If you plan using this filter with your own systems, some modifications need to be made in order to adjust to your motion model accordingly. Feel free to create an issue if you need help.
+
 This interpolated information from one stream is combined with the so called pose "measurement" on the other stream, as well as an underlying motion model.
 The name "Delta filter" stems from the fact that the filter consideres the transformation changes (= deltas) of both pose streams.
 The current filtered pose is constantly updated using the deltas.
