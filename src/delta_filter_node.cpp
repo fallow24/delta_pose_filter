@@ -17,6 +17,7 @@ const char* frame_id_imu_default = "map";//"imu"; // SHOULD BE IMU!!!
 const char* frame_id_cam_default = "camera_frame";
 
 int imu_rate, cam_rate; // In Hz
+int fast_rate, slow_rate; // Redefinition, same as above
 int n_acc; // Accumulation window of slower pose stream 
 
 double r_sphere; // Radius of sphere in m
@@ -58,18 +59,21 @@ uint32_t sequence = 0; // Sequence number for publish msg
 
 inline void waitForAccumulator(double t) 
 {   
+    static ros::Rate rate(fast_rate); 
     // Wait for the queue to be not empty
-    while (accumulator.size() < 1 && ros::ok())
+    while (accumulator.size() < 1 && ros::ok()) {
         callbacks_fast.callOne( ros::WallDuration() );
-
+	rate.sleep();
+    }
+	
     // Wait for the query time to be between the accumulator times
     while( !(accumulator.front().header.stamp.toSec() < t 
       && t < accumulator.back().header.stamp.toSec()) 
       && ros::ok() ) {
-
         // If interpolation is disabled, all msgs have the same queue
         if (interpolate == NONE) ros::spinOnce();
         else callbacks_fast.callOne( ros::WallDuration() );
+        rate.sleep();
     }   
 
 }
@@ -147,9 +151,8 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
 
     // Get rotational distance (angle) and translational distance of deltas
-    // TODO: angle( ) function returns HALF the angle! Multiply by 2!
-    double dist_r_int = 2*diff_interpolated.getRotation().angle( rot_zero ); //*2
-    double dist_r_mea = 2*diff_measured.getRotation().angle( rot_zero ); //*2
+    double dist_r_int = diff_interpolated.getRotation().angle( rot_zero ); //*2
+    double dist_r_mea = diff_measured.getRotation().angle( rot_zero ); //*2
     double dist_t_int = diff_interpolated.getOrigin().distance(origin); // these will return positive!
     double dist_t_mea = diff_measured.getOrigin().distance(origin); // these will return positive!
 
@@ -202,7 +205,6 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     m_interpolated.getRPY(ri, pi, yi);
     rotation.setRPY(rm, pm, yi);
     tf::quaternionTFToMsg(rotation, filtered_pose_msg.pose.orientation);
-    
     // Publish
     filtered_pose_pub.publish( filtered_pose_msg );
     
@@ -214,7 +216,7 @@ void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
 {
     // Initialization on first run
     if (!initialized_imu) {
-        
+        ROS_INFO("Imu init");
         filtered_pose_msg = *m;
         last_imu_pose = *m;
         initialized_imu = true;
@@ -371,8 +373,13 @@ int main(int argc, char** argv)
     if (publish_debug_topic) debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/delta/debug", 1000);
 
     // Main processing loop, wait for callbacks to happen
+    fast_rate = std::max(cam_rate, imu_rate);
+    slow_rate = std::min(cam_rate, imu_rate);
+    ros::Rate r(fast_rate);
     while(ros::ok()) {
         ros::spinOnce();
+    	callbacks_fast.callOne();
+	r.sleep();
     }
 
     return 0;
