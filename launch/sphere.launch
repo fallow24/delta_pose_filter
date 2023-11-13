@@ -90,7 +90,7 @@
 
     <node pkg="realsense_pipeline_fix" type="auto_reconnect" name="realsense_pose_node" output="screen" />
 
-    <node pkg="delta_pose_filter" type="filter_node" name="delta_pose_filter_node2" output="screen" />
+    <node pkg="delta_pose_filter" type="filter_node" name="delta_pose_filter_node" output="screen" />
 
     <node pkg="delta_pose_filter" type="vizualizer" name="delta_tf_lidar_pub" output="screen" />
 
