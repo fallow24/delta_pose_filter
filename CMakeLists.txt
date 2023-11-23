@@ -14,6 +14,8 @@ find_package(catkin REQUIRED COMPONENTS
   tf
 )
 
+find_package(Eigen3 REQUIRED)
+
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -122,6 +124,8 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
+include_directories(SYSTEM ${EIGEN3_INCLUDE_DIRS})
+
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}
 #   src/${PROJECT_NAME}/delta_pose_filter.cpp
@@ -137,6 +141,7 @@ include_directories(
 ## The recommended prefix ensures that target names across packages don't collide
 add_executable(filter_node src/delta_filter_node.cpp)
 add_executable(vizualizer src/delta_tf_lidar_pub.cpp)
+add_executable(lkf_node src/lkf_filter_node.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -154,6 +159,10 @@ target_link_libraries(filter_node
 )
 
 target_link_libraries(vizualizer
+  ${catkin_LIBRARIES}
+)
+
+target_link_libraries(lkf_node
   ${catkin_LIBRARIES}
 )
 
