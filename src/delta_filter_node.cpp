@@ -13,7 +13,7 @@ const char* topic_publish_default = "/delta/pose";
 const char* topic_pose_imu_default = "/posePub_merged";
 const char* topic_pose_cam_default = "/camera/pose"; 
 
-const char* frame_id_imu_default = "map";//"imu"; // SHOULD BE IMU!!!
+const char* frame_id_imu_default = "imu_frame";
 const char* frame_id_cam_default = "camera_frame";
 
 int imu_rate, cam_rate; // In Hz
@@ -59,13 +59,17 @@ uint32_t sequence = 0; // Sequence number for publish msg
 
 inline void waitForAccumulator(double t) 
 {   
-    static ros::Rate rate(fast_rate); 
     // Wait for the queue to be not empty
     while (accumulator.size() < 1 && ros::ok()) {
         callbacks_fast.callOne( ros::WallDuration() );
-	rate.sleep();
+	}
+
+    // Sanity check if we are lagging
+    if (t < accumulator.front().header.stamp.toSec()){
+        ROS_WARN("Lagging: Query time %fs < %fs. Returning early.", t, accumulator.front().header.stamp.toSec());
+	    return;
     }
-	
+
     // Wait for the query time to be between the accumulator times
     while( !(accumulator.front().header.stamp.toSec() < t 
       && t < accumulator.back().header.stamp.toSec()) 
@@ -73,9 +77,7 @@ inline void waitForAccumulator(double t)
         // If interpolation is disabled, all msgs have the same queue
         if (interpolate == NONE) ros::spinOnce();
         else callbacks_fast.callOne( ros::WallDuration() );
-        rate.sleep();
     }   
-
 }
 
 inline void pushToAccumulator(const geometry_msgs::PoseStamped::ConstPtr &m)
@@ -115,7 +117,7 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     tfScalar t_current = stamp_current.toSec();
 
     waitForAccumulator(t_current);
-
+    
     // Convert geometry_msgs to Quaternion format
     tf::Quaternion q1, q2, q_res;
     tf::quaternionMsgToTF(accumulator.front().pose.orientation, q1);
@@ -170,7 +172,6 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     // ESTIMATE "REAL" ARC LENGTH USING GEOMETRIC MEAN WITH SIMILARITY SCORES
     double alpha = mid(dist_t_int, dist_t_mea, dist_t_model) - min(dist_t_int, dist_t_mea, dist_t_model);
     double beta = max(dist_t_int, dist_t_mea, dist_t_model) - mid(dist_t_int, dist_t_mea, dist_t_model);
-    // TODO: FIXME division trough 0! (fix: alpha, beta are both >= 0 --> small number will prevent division through 0) 
     double w_int = fabs( (dist_t_int - alpha - beta - small_number)/(alpha + beta + small_number) );
     double w_mea = fabs( (dist_t_mea - alpha - beta - small_number)/(alpha + beta + small_number) );
     double w_model = fabs( (dist_t_model - alpha - beta - small_number)/(alpha + beta + small_number) );
@@ -188,7 +189,7 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
 
     // Construct msg
     tf::poseStampedTFToMsg(current_pose, filtered_pose_msg);
-    filtered_pose_msg.header.frame_id = "map";
+    filtered_pose_msg.header.frame_id = "odom";
     filtered_pose_msg.header.stamp = stamp_current;
     filtered_pose_msg.header.seq = sequence++;
 
@@ -279,7 +280,7 @@ void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
         rotated_pose.mult(tf_map_imu2cam, rotated_pose);
         
         debug_pose_msg.header = m->header;
-        debug_pose_msg.header.frame_id = "map";
+        debug_pose_msg.header.frame_id = "odom";
         tf::poseTFToMsg(rotated_pose, debug_pose_msg.pose);
         debug_pose_pub.publish( debug_pose_msg );
     }
@@ -375,11 +376,11 @@ int main(int argc, char** argv)
     // Main processing loop, wait for callbacks to happen
     fast_rate = std::max(cam_rate, imu_rate);
     slow_rate = std::min(cam_rate, imu_rate);
-    ros::Rate r(fast_rate);
+    ros::Rate r(fast_rate*2);
     while(ros::ok()) {
         ros::spinOnce();
     	callbacks_fast.callOne();
-	r.sleep();
+	    r.sleep();
     }
 
     return 0;
