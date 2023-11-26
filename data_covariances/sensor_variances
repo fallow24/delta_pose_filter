@@ -1,0 +1,47 @@
+covariance matrices for imu and camera - determined via optitrack1.bag's data of the first 3.5 seconds, where the sphere was still:
+
+// IMU:
+//[x, y, z, roll, pitch, yaw, ang_vel_x, ang_vel_y, ang_vel_z]^T
+    Eigen::VectorXf imu_variances = Eigen::VectorXf::Zero(9);
+    imu_variances[0] = 0.000000002685523762832521;
+    imu_variances[1] = 0.0000001275576292974622;
+    imu_variances[2] = 0.0001;  //not measured
+    imu_variances[3] = 0.009465788593315629;
+    imu_variances[4] = 0.0001922401945712851;
+    imu_variances[5] = 0.00007255917842660958;
+    imu_variances[6] = 0.00008535226550528127;
+    imu_variances[7] = 0.00002174349644727122;
+    imu_variances[8] = 0.00001210644017747147;
+
+    R_imu << imu_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,              // var(x)
+             0, imu_variances[1], 0, 0, 0, 0, 0, 0, 0,              // var(y)
+             0, 0, imu_variances[2], 0, 0, 0, 0, 0, 0,              // var(z)
+             0, 0, 0, imu_variances[3], 0, 0, 0, 0, 0,              // var(roll)
+             0, 0, 0, 0, imu_variances[4], 0, 0, 0, 0,              // var(pitch)
+             0, 0, 0, 0, 0, imu_variances[5], 0, 0, 0,              // var(yaw)
+             0, 0, 0, 0, 0, 0, imu_variances[6], 0, 0,              // var(angular_vel_x)
+             0, 0, 0, 0, 0, 0, 0, imu_variances[7], 0,              // var(angular_vel_y)
+             0, 0, 0, 0, 0, 0, 0, 0, imu_variances[8];              // var(angular_vel_z)
+
+// CAM:
+//[x, y, z, roll, pitch, yaw, ang_vel_x, ang_vel_y, ang_vel_z]^T
+    Eigen::VectorXf cam_variances = Eigen::VectorXf::Zero(9);
+    cam_variances[0] = 0.00000001217939299950571;
+    cam_variances[1] = 0.0000000008446764545249315;
+    cam_variances[2] = 0.000000007498298810942597;
+    cam_variances[3] = 0.0002543484849699809;
+    cam_variances[4] = 0.004764144829708403;
+    cam_variances[5] = 0.0001030990187090913;
+    imu_variances[6] = 0.0001;  //not measured
+    imu_variances[7] = 0.0001;  //not measured
+    imu_variances[8] = 0.0001;  //not measured
+
+    R_cam << cam_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,
+             0, cam_variances[1], 0, 0, 0, 0, 0, 0, 0,
+             0, 0, cam_variances[2], 0, 0, 0, 0, 0, 0,
+             0, 0, 0, cam_variances[3], 0, 0, 0, 0, 0,
+             0, 0, 0, 0, cam_variances[4], 0, 0, 0, 0,
+             0, 0, 0, 0, 0, cam_variances[5], 0, 0, 0,
+             0, 0, 0, 0, 0, 0, cam_variances[6], 0, 0,
+             0, 0, 0, 0, 0, 0, 0, cam_variances[7], 0,
+             0, 0, 0, 0, 0, 0, 0, 0, cam_variances[8];
