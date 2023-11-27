@@ -32,6 +32,6 @@
     <!-- Defines the transform between CAM and IMU coordinate systems in the global map frame, e.g.: IMU moves in x, CAM in y -->
     <node pkg="tf" type="static_transform_publisher" name="global_static_tf_imu_cam" args="0 0 0 1.570796 0 0 $(arg frame_id_cam) $(arg frame_id_imu) 100" />
     
-    <node pkg="delta_pose_filter" type="filter_node" name="delta_pose_filter_node2" output="screen" />
+    <node pkg="delta_pose_filter" type="kalman_filter_node" name="delta_pose_filter_node2" output="screen" />
 
 </launch>
