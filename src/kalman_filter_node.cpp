@@ -214,7 +214,7 @@ Eigen::VectorXf z = Eigen::VectorXf::Zero(9); // used in update step for innovat
 // measurement prediction matrix
 Eigen::MatrixXf H = Eigen::MatrixXf::Identity(9, 9); // check depending on sensors -> measurement provides all variables in state -> all ones?
 
-Eigen::MatrixXf Q = 0.001 * Eigen::MatrixXf::Identity(9, 9); // process noise covariance matrix Q / System prediction noise -> how accurate is model
+Eigen::MatrixXf Q = 0.0001 * Eigen::MatrixXf::Identity(9, 9); // process noise covariance matrix Q / System prediction noise -> how accurate is model
 // takes influences like wind, bumps etc into account -> should be rather small compared to P
 // TODO: determine Q -> modell konstant
 
@@ -223,22 +223,14 @@ Eigen::MatrixXf Q = 0.001 * Eigen::MatrixXf::Identity(9, 9); // process noise co
 Eigen::MatrixXf R_imu(9, 9);
 Eigen::MatrixXf R_cam(9, 9); // evtl z achse manuell hohe varianz geben
 
-// R = (sigma_imu)² || (sigma_cam)² = standard deviation for sensor -> determine R for imu and R for Cam
-
-/*
-R<< sigma_imu_x² + sigma_cam_x² 0 0 0 0 0
-    0 sigma_imu_y² + sigma_cam_y² 0 0 0 0
-    0 0 sigma_imu_z² + sigma_cam_z² 0 0 0
-    ...
-*/
 
 // Prediction Step
 void predict_state(const double dT, Eigen::VectorXf u)
 {
     // std::cout << "state_start:\n" << state << "\n";
 
-    F << 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0,
+    F <<0, 0, 0, 0, 0, 0, 0, (dT * r_sphere), 0,
+        0, 0, 0, 0, 0, 0, (dT * r_sphere), 0, 0,
         0, 0, 1, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 1, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 1, 0, 0, 0, 0,
@@ -258,12 +250,21 @@ void predict_state(const double dT, Eigen::VectorXf u)
         0, 0, 0, 0, 0, 0, 0, 0, 0;
 
     // predict state
-    state = F * state + G * u; // 9x9 * 9x1 = 9x1   //here: x_pri
+    state = F * state; // + G * u;   // 9x9 * 9x1 = 9x1   //here: x_pri
     // result is 9x1 vector with [dX, dY, dZ, r, p ,y, v_x, v_y, v_z]^T
     // std::cout << "x_pri:\n" << state << "\n";
 
+    //Q = G * R_imu * G.transpose();
+
+    /*std::cout << "P_pri:\n" << P << "\n";
+    std::cout << "F:\n" << F << "\n";
+    std::cout << "FT:\n" << F.transpose() << "\n";
+    std::cout << "Q:\n" << Q << "\n";*/
+
     P = F * P * F.transpose() + Q; // here: calculate P_pri   // 9x9 * 9x9 * 9x9 + 9x9 = 9x9
-    // std::cout << "P:\n" << P << "\n";
+    
+    //std::cout << "P_pos:\n" << P << "\n";
+    
 
     // predict measurement
     z = H * state; // H * x_pri  //if H = identity matrix -> z = x ?    // 9x9 * 9x1 = 9x1
@@ -285,11 +286,12 @@ void update_state(const Eigen::VectorXf &measurement, const Eigen::MatrixXf R)
     state = state + (K * innovation);                  // calculate x_pos    // 9x1 + (9x9 * 9x1) = 9x1 + 9x1 = 9x1
     P = (Eigen::MatrixXf::Identity(9, 9) - K * H) * P; // (9x9 - (9x9 * 9x9)) * 9x9 = 9x9
 
-    /*std::cout << "S" << S << std::endl;
-    std::cout << "S_inverse" << S.inverse() << std::endl;
-    std::cout << "K" << K<< std::endl;
-    std::cout << "innovation" << innovation<< std::endl;
-    std::cout << "new state" << state<< std::endl;*/
+    /*std::cout << "S\n" << S << std::endl;
+    std::cout << "R\n" << R << std::endl;
+    std::cout << "S_inverse\n" << S.inverse() << std::endl;
+    std::cout << "K\n" << K<< std::endl;
+    std::cout << "innovation\n" << innovation<< std::endl;
+    std::cout << "new state\n" << state<< std::endl;*/
 }
 
 // PoseStamped -> Pose, Header -> Pose: Point, Quaternion -> Point: x,y,z; Quaternion: x,y,z,w
@@ -349,7 +351,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     eigen_angular_velocity_rotated[2] = tf_angular_velocity_rotated.getZ();
 
     // vector * [0,0,1]^T
-    eigen_angular_velocity_rotated = eigen_angular_velocity_rotated.cross(eigen_norm_vector);
+    //eigen_angular_velocity_rotated = eigen_angular_velocity_rotated.cross(eigen_norm_vector);
 
     // make vector 9dof for predict step
     Eigen::VectorXf eigen_angular_velocity_rotated_9dof = Eigen::VectorXf::Zero(9);
@@ -364,11 +366,10 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     // update step
     Eigen::VectorXf measurement(9);
+
     // update for cam (interpolated)
     geometry_msgs::Pose cam_pose;
     tf::poseTFToMsg(pose_interpolated, cam_pose);
-
-    // std::cout << "cam_pose: " << cam_pose << " , imu pose: " << m->pose << std::endl;
 
     // calculate delta for rpy of cam
 
@@ -391,9 +392,10 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     measurement << cam_diff_interpolated.getOrigin().getX(), cam_diff_interpolated.getOrigin().getY(), cam_diff_interpolated.getOrigin().getZ(),
         getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation),
-        0, 0, 0;
+        tf_angular_velocity_rotated.getX(), tf_angular_velocity_rotated.getY(), tf_angular_velocity_rotated.getZ();
 
-    //update_state(measurement, R_cam);
+    update_state(measurement, R_cam);
+
 
     // update step IMU
 
@@ -787,7 +789,7 @@ int main(int argc, char **argv)
     Eigen::VectorXf imu_variances = Eigen::VectorXf::Zero(9); //[x,y,z,r,p,y, angular_vel_x, angular_vel_y, angular_vel_z]^T
     imu_variances[0] = 0.000000002685523762832521;
     imu_variances[1] = 0.0000001275576292974622;
-    imu_variances[2] = 0.0001;  //not measured
+    imu_variances[2] = 0.1;  //not measured
     imu_variances[3] = 0.009465788593315629;
     imu_variances[4] = 0.0001922401945712851;
     imu_variances[5] = 0.00007255917842660958;
@@ -813,9 +815,9 @@ int main(int argc, char **argv)
     cam_variances[3] = 0.0002543484849699809;
     cam_variances[4] = 0.004764144829708403;
     cam_variances[5] = 0.0001030990187090913;
-    imu_variances[6] = 0.0001;  //not measured
-    imu_variances[7] = 0.0001;  //not measured
-    imu_variances[8] = 0.0001;  //not measured
+    imu_variances[6] = 0.1;  //not measured
+    imu_variances[7] = 0.1;  //not measured
+    imu_variances[8] = 0.1;  //not measured
 
     R_cam << cam_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,
              0, cam_variances[1], 0, 0, 0, 0, 0, 0, 0,
@@ -826,6 +828,18 @@ int main(int argc, char **argv)
              0, 0, 0, 0, 0, 0, cam_variances[6], 0, 0,
              0, 0, 0, 0, 0, 0, 0, cam_variances[7], 0,
              0, 0, 0, 0, 0, 0, 0, 0, cam_variances[8];
+
+    /*Q <<     0, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 0, 0, 1, 0, 0,
+             0, 0, 0, 0, 0, 0, 0, 1, 0,
+             0, 0, 0, 0, 0, 0, 0, 0, 1;
+
+    Q = Q * R_imu;*/
 
     while (ros::ok())
     {
