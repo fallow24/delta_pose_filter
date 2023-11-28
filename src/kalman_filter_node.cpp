@@ -82,14 +82,6 @@ sensor_msgs::Imu angular_vel_curr;
 Eigen::Vector3f eigen_norm_vector;
 tf::Vector3 tf_norm_vector;
 
-// Store last iterations orientation angles to calculate delta for KF
-/*Eigen::VectorXf last_rpy_imu = Eigen::VectorXf::Zero(3);
-Eigen::VectorXf last_rpy_cam = Eigen::VectorXf::Zero(3);*/
-
-// Store delta of orientation angles
-/*Eigen::VectorXf d_rpy_cam = Eigen::VectorXf::Zero(3);
-Eigen::VectorXf d_rpy_imu = Eigen::VectorXf::Zero(3);*/
-
 // Store sum of filtered delta values for rpy
 Eigen::VectorXf filtered_rpy_sum = Eigen::VectorXf::Zero(3);
 
@@ -227,10 +219,9 @@ Eigen::MatrixXf R_cam(9, 9); // evtl z achse manuell hohe varianz geben
 // Prediction Step
 void predict_state(const double dT, Eigen::VectorXf u)
 {
-    // std::cout << "state_start:\n" << state << "\n";
 
     F <<0, 0, 0, 0, 0, 0, 0, (dT * r_sphere), 0,
-        0, 0, 0, 0, 0, 0, (dT * r_sphere), 0, 0,
+        0, 0, 0, 0, 0, 0, -(dT * r_sphere), 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 1, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 1, 0, 0, 0, 0,
@@ -282,8 +273,6 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // calculate dT
     double dT = (m->header.stamp - last_imu_pose.header.stamp).toSec();
 
-    // printf("dT: %f",dT);
-
     // Get timestamp from current and wait for accumulator to go past that
     ros::Time stamp_current = m->header.stamp;
     tfScalar t_current = stamp_current.toSec();
@@ -314,18 +303,21 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
     pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
 
-
     tf::Vector3 tf_angular_velocity;
     tf::vector3MsgToTF(angular_vel_curr.angular_velocity, tf_angular_velocity);
 
     tf::Matrix3x3 rotation_matrix;
-    rotation_matrix.setRPY(getRollFromQuaternion(m->pose.orientation), getPitchFromQuaternion(m->pose.orientation), getYawFromQuaternion(m->pose.orientation));
+    rotation_matrix.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));
     tf::Vector3 tf_angular_velocity_rotated = rotation_matrix.inverse() * tf_angular_velocity;
 
     Eigen::Vector3f eigen_angular_velocity_rotated;
     eigen_angular_velocity_rotated[0] = tf_angular_velocity_rotated.getX();
     eigen_angular_velocity_rotated[1] = tf_angular_velocity_rotated.getY();
     eigen_angular_velocity_rotated[2] = tf_angular_velocity_rotated.getZ();
+
+    tf::Pose imu_diff = pose_diff(m, last_imu_pose);
+    geometry_msgs::Pose imu_diff_geom_msgs;
+    tf::poseTFToMsg(imu_diff, imu_diff_geom_msgs);
 
     // make vector 9dof for predict step
     Eigen::VectorXf eigen_angular_velocity_rotated_9dof = Eigen::VectorXf::Zero(9);
@@ -349,11 +341,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     geometry_msgs::Pose cam_diff_geom_msgs;
     tf::poseTFToMsg(cam_diff_interpolated, cam_diff_geom_msgs);
 
-    tf::Pose imu_diff = pose_diff(m, last_imu_pose);
-    geometry_msgs::Pose imu_diff_geom_msgs;
-    tf::poseTFToMsg(imu_diff, imu_diff_geom_msgs);
-
-     measurement << imu_diff.getOrigin().getX(), imu_diff.getOrigin().getY(), imu_diff.getOrigin().getZ(),
+    measurement << imu_diff.getOrigin().getX(), imu_diff.getOrigin().getY(), imu_diff.getOrigin().getZ(),
         getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation),
         tf_angular_velocity_rotated.getX(), tf_angular_velocity_rotated.getY(), tf_angular_velocity_rotated.getZ();
 
@@ -373,8 +361,11 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     tf::poseStampedMsgToTF(filtered_pose_msg, filteredPose);      // put last published msg into filteredPose
     filteredPose.mult(filteredPose, filteredDeltaPose.inverse()); // update der filtered pose
     tf::poseStampedTFToMsg(filteredPose, filtered_pose_msg);      // update filtered_Pose_msg
-
-    filtered_pose_msg.pose.position.z = state[2];*/
+    
+    // double tmp_y, tmp_p, tmp_r;
+    // tf::Matrix3x3(filteredDeltaPose.inverse().getRotation()).getRPY(tmp_r, tmp_p, tmp_y);
+    // printf("Diff: %f %f %f\n", tmp_r, tmp_p, tmp_y);
+    // printf("Angular vel: %f %f %f\n", state[6], state[7], state[8]);
 
     // Construct msg
     filtered_pose_msg.header.frame_id = "map";
@@ -386,7 +377,6 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     // Prep next iteration
     last_pose_interpolated = pose_interpolated;
-
 }
 
 void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
@@ -590,7 +580,7 @@ int main(int argc, char **argv)
     Eigen::VectorXf imu_variances = Eigen::VectorXf::Zero(9); //[x,y,z,r,p,y, angular_vel_x, angular_vel_y, angular_vel_z]^T
     imu_variances[0] = 0.1; // 0.000000002685523762832521;
     imu_variances[1] = 0.1; //0.0000001275576292974622;
-    imu_variances[2] = 0.1;  //not measured
+    imu_variances[2] = 0.001;  //not measured
     imu_variances[3] = 0.1; //0.009465788593315629;
     imu_variances[4] = 0.1; //0.0001922401945712851;
     imu_variances[5] = 0.1; //0.00007255917842660958;
