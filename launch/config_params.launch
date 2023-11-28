@@ -22,7 +22,8 @@
     <param name="imu_rate" type="int" value="$(arg imu_rate)" />
     <param name="cam_rate" type="int" value="$(arg cam_rate)" />
     <param name="sphere_radius" type="double" value="$(arg sphere_radius)" /> 
-    <param name="debug_topics" type="bool" value="$(arg debug_topics)"/> 
+    <param name="debug_topics" type="bool" value="$(arg debug_topics)"/>
+
 
     <!-- Order of transforms: x y z rz ry rx, intrinsic rotation order: rx first, new ry second, new rz third -->
     
@@ -32,6 +33,6 @@
     <!-- Defines the transform between CAM and IMU coordinate systems in the global map frame, e.g.: IMU moves in x, CAM in y -->
     <node pkg="tf" type="static_transform_publisher" name="global_static_tf_imu_cam" args="0 0 0 1.570796 0 0 $(arg frame_id_cam) $(arg frame_id_imu) 100" />
     
-    <node pkg="delta_pose_filter" type="filter_node" name="delta_pose_filter_node2" output="screen" />
+    <node pkg="delta_pose_filter" type="kalman_filter_node" name="kalman_pose_filter_node2" output="screen" />
 
 </launch>
