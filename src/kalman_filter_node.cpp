@@ -252,23 +252,13 @@ void predict_state(const double dT, Eigen::VectorXf u)
     // predict state
     state = F * state; // + G * u;   // 9x9 * 9x1 = 9x1   //here: x_pri
     // result is 9x1 vector with [dX, dY, dZ, r, p ,y, v_x, v_y, v_z]^T
-    // std::cout << "x_pri:\n" << state << "\n";
 
     //Q = G * R_imu * G.transpose();
 
-    /*std::cout << "P_pri:\n" << P << "\n";
-    std::cout << "F:\n" << F << "\n";
-    std::cout << "FT:\n" << F.transpose() << "\n";
-    std::cout << "Q:\n" << Q << "\n";*/
-
-    P = F * P * F.transpose() + Q; // here: calculate P_pri   // 9x9 * 9x9 * 9x9 + 9x9 = 9x9
-    
-    //std::cout << "P_pos:\n" << P << "\n";
-    
+    P = F * P * F.transpose() + Q; // here: calculate P_pri   // 9x9 * 9x9 * 9x9 + 9x9 = 9x9    
 
     // predict measurement
     z = H * state; // H * x_pri  //if H = identity matrix -> z = x ?    // 9x9 * 9x1 = 9x1
-    // std::cout << "prediction:\n" << z << std::endl;
 }
 
 // Update Step -> measurement comes from either imu or cam callback
