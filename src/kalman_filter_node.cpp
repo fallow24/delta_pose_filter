@@ -12,28 +12,12 @@
 #include <ros/ros.h>
 
 #include <Eigen/Dense>
-#include <geometry_msgs/Twist.h> //for angular velocity
 
 /*
-TODO:   (!)use systeminput either as u(t) and with G matrix or do everything in 9DoF
-        (!)fix gimbal lock due to r,p,y -> either quaternions or use angle differences
-        (?)covariances into matrices
-
-        wird x achse und y achse von cam und imu angepasst, momentan vertauscht
-
-
-        -entweder delta rpy oder quaternionen und bei R matrix erst mal kleine werte annehmen
-
-
-        -angular vel muss in richtigen frame gerückt werden, bevor linear vel aufgestellt, entweder letzten wert oder nächste prediction nutzen um von imu frame in map frame
-        dafür last_filtered_pose nutzen
-
-        -in R matrix z achse von imu hohen wert geben? selbe bei 7,8,9 von cam
-        -cam werte doch lieber als system input mit G und u, sodass R nicht addiert werden muss? macht ja varianzen kaputt oder?
-        -lieber quaternionen statt rpy oder? varianzne aus csv?
+        - (?)covariances into matrices
+        - Interpolation of angular velocities?
+        - interpolation von cam imu daten über neue waitForAccumulator methode und neue queue
 */
-
-// rohdaten in orientation topic -> angular vel und accelerometer werte -> als systeminput angular vel
 
 // Rosparam parameters
 const char *topic_publish_default = "/delta/pose";
@@ -76,7 +60,8 @@ tf::StampedTransform tf_map_imu2cam, tf_axes_imu2cam;
 ros::Publisher filtered_pose_pub;
 
 // Store current angular velocity provided by imus
-sensor_msgs::Imu angular_vel_curr;
+sensor_msgs::Imu imu_angular_vel_curr;
+sensor_msgs::Imu cam_angular_vel_curr;
 
 // norm vector for rotation of angular velocity
 Eigen::Vector3f eigen_norm_vector;
@@ -181,9 +166,6 @@ inline double getYawFromQuaternion(const geometry_msgs::Quaternion &q)
 }
 
 //--------------LKF----------------
-
-// noch ohne Systemeingang, also ohne G matrix und u(k)
-// H, F, R, Q, nicht verändert pro step
 
 // LKF state
 Eigen::VectorXf state = Eigen::VectorXf::Zero(9); //(x, y, z, roll, pitch, yaw, w_x, w_y, w_z) -> initial 0
@@ -299,31 +281,41 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // Construct interpolated result
     pose_interpolated = tf::Pose(q_res, v_res);
 
-    // rotate interpolated pose via basis change
+    // rotate interpolated pose via basis change        //Noch für imu cam?
     pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
     pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
 
-    tf::Vector3 tf_angular_velocity;
-    tf::vector3MsgToTF(angular_vel_curr.angular_velocity, tf_angular_velocity);
+    //angular velocities transformation
+    tf::Vector3 tf_angular_velocity_imu;
+    tf::vector3MsgToTF(imu_angular_vel_curr.angular_velocity, tf_angular_velocity_imu);
+    tf::Vector3 tf_angular_velocity_cam;
+    tf::vector3MsgToTF(cam_angular_vel_curr.angular_velocity, tf_angular_velocity_cam);
 
     tf::Matrix3x3 rotation_matrix;
     rotation_matrix.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));
-    tf::Vector3 tf_angular_velocity_rotated = rotation_matrix.inverse() * tf_angular_velocity;
+    tf::Vector3 tf_angular_velocity_imu_rotated = rotation_matrix.inverse() * tf_angular_velocity_imu;
+    tf::Vector3 tf_angular_velocity_cam_rotated = rotation_matrix.inverse() * tf_angular_velocity_cam;
 
-    Eigen::Vector3f eigen_angular_velocity_rotated;
-    eigen_angular_velocity_rotated[0] = tf_angular_velocity_rotated.getX();
-    eigen_angular_velocity_rotated[1] = tf_angular_velocity_rotated.getY();
-    eigen_angular_velocity_rotated[2] = tf_angular_velocity_rotated.getZ();
+    Eigen::Vector3f eigen_angular_velocity_imu_rotated;
+    eigen_angular_velocity_imu_rotated[0] = tf_angular_velocity_imu_rotated.getX();
+    eigen_angular_velocity_imu_rotated[1] = tf_angular_velocity_imu_rotated.getY();
+    eigen_angular_velocity_imu_rotated[2] = tf_angular_velocity_imu_rotated.getZ();
 
+    Eigen::Vector3f eigen_angular_velocity_cam_rotated;
+    eigen_angular_velocity_cam_rotated[0] = tf_angular_velocity_cam_rotated.getX();
+    eigen_angular_velocity_cam_rotated[1] = tf_angular_velocity_cam_rotated.getY();
+    eigen_angular_velocity_cam_rotated[2] = tf_angular_velocity_cam_rotated.getZ();
+
+    // Calculate delta of imu pose
     tf::Pose imu_diff = pose_diff(m, last_imu_pose);
     geometry_msgs::Pose imu_diff_geom_msgs;
     tf::poseTFToMsg(imu_diff, imu_diff_geom_msgs);
 
     // make vector 9dof for predict step
     Eigen::VectorXf eigen_angular_velocity_rotated_9dof = Eigen::VectorXf::Zero(9);
-    eigen_angular_velocity_rotated_9dof[6] = eigen_angular_velocity_rotated[0];
-    eigen_angular_velocity_rotated_9dof[7] = eigen_angular_velocity_rotated[1];
-    eigen_angular_velocity_rotated_9dof[8] = eigen_angular_velocity_rotated[2];
+    eigen_angular_velocity_rotated_9dof[6] = eigen_angular_velocity_imu_rotated[0];
+    eigen_angular_velocity_rotated_9dof[7] = eigen_angular_velocity_imu_rotated[1];
+    eigen_angular_velocity_rotated_9dof[8] = eigen_angular_velocity_imu_rotated[2];
 
     // prediction step
     predict_state(dT, eigen_angular_velocity_rotated_9dof);
@@ -337,19 +329,20 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
         ROS_WARN("Attempted fix, length: %f", last_pose_interpolated.getRotation().length());
     }
     
+    // Calculate delta of cam pose
     tf::Pose cam_diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
     geometry_msgs::Pose cam_diff_geom_msgs;
     tf::poseTFToMsg(cam_diff_interpolated, cam_diff_geom_msgs);
 
     measurement << imu_diff.getOrigin().getX(), imu_diff.getOrigin().getY(), imu_diff.getOrigin().getZ(),
         getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation),
-        tf_angular_velocity_rotated.getX(), tf_angular_velocity_rotated.getY(), tf_angular_velocity_rotated.getZ();
+        tf_angular_velocity_imu_rotated.getX(), tf_angular_velocity_imu_rotated.getY(), tf_angular_velocity_imu_rotated.getZ();
 
     update_state(measurement, R_imu);
 
     measurement << cam_diff_interpolated.getOrigin().getX(), cam_diff_interpolated.getOrigin().getY(), cam_diff_interpolated.getOrigin().getZ(),
         getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation),
-        tf_angular_velocity_rotated.getX(), tf_angular_velocity_rotated.getY(), tf_angular_velocity_rotated.getZ();
+        tf_angular_velocity_cam_rotated.getX(), tf_angular_velocity_cam_rotated.getY(), tf_angular_velocity_cam_rotated.getZ();
 
     update_state(measurement, R_cam);
 
@@ -467,8 +460,14 @@ void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
 
 void orientationImuCallback(const sensor_msgs::Imu::ConstPtr &m)
 {
-    angular_vel_curr = *m;
+    imu_angular_vel_curr = *m;
 }
+
+void orientationCamCallback(const sensor_msgs::Imu *&m){
+    cam_angular_vel_curr = *m;
+}
+
+
 
 int main(int argc, char **argv)
 {
@@ -542,8 +541,7 @@ int main(int argc, char **argv)
              tf_axes_imu2cam.getRotation().w());
 
     // Publishers and subscribers
-    // TODO noch callback für sensor_msgs/IMU
-    ros::Subscriber cam_pose_sub, imu_pose_sub, imu_vel_sub;
+    ros::Subscriber cam_pose_sub, imu_pose_sub, imu_vel_sub, cam_imu_vel_sub;
     if (interpolate == IMU)
     {
         cam_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
@@ -560,6 +558,7 @@ int main(int argc, char **argv)
         imu_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
     }
     imu_vel_sub = nh.subscribe<sensor_msgs::Imu>("orientation", 1000, orientationImuCallback);
+    cam_imu_vel_sub = nh.subscribe<sensor_msgs::Imu>("/camera/imu", 1000, orientationCamCallback);
 
     filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>(topic_publish, 1000);
     if (publish_debug_topic)
