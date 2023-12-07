@@ -36,11 +36,11 @@ TODO:   (!)use systeminput either as u(t) and with G matrix or do everything in 
 // rohdaten in orientation topic -> angular vel und accelerometer werte -> als systeminput angular vel
 
 // Rosparam parameters
-const char *topic_publish_default = "/delta/pose";
+const char *topic_publish_default = "/lkf/pose";
 const char *topic_pose_imu_default = "/posePub_merged";
 const char *topic_pose_cam_default = "/camera/pose";
 
-const char *frame_id_imu_default = "map"; //"imu"; // SHOULD BE IMU!!!
+const char *frame_id_imu_default = "imu_frame"; //"imu"; // SHOULD BE IMU!!!
 const char *frame_id_cam_default = "camera_frame";
 
 int imu_rate, cam_rate;   // In Hz
@@ -99,14 +99,13 @@ uint32_t sequence = 0; // Sequence number for publish msg
 
 inline void waitForAccumulator(double t)
 {
-
     // Wait for the queue to be not empty
     while (accumulator.size() < 1 && ros::ok())
     {
-        callbacks_fast.callOne(ros::WallDuration()); // callbacks_fast momentan für cam --- zeitstempel von imu und posePubMerged gleich -> nicht für imu interpolieren
-        
+        callbacks_fast.callOne(ros::WallDuration()); 
     }
 
+    // If the program laggs behind the accumulator
     if (t < accumulator.front().header.stamp.toSec())
         return;
 
@@ -118,7 +117,6 @@ inline void waitForAccumulator(double t)
             ros::spinOnce();
         else
             callbacks_fast.callOne(ros::WallDuration());
-        
     }
 }
 
@@ -182,9 +180,6 @@ inline double getYawFromQuaternion(const geometry_msgs::Quaternion &q)
 
 //--------------LKF----------------
 
-// noch ohne Systemeingang, also ohne G matrix und u(k)
-// H, F, R, Q, nicht verändert pro step
-
 // LKF state
 Eigen::VectorXf state = Eigen::VectorXf::Zero(9); //(x, y, z, roll, pitch, yaw, w_x, w_y, w_z) -> initial 0
 
@@ -207,11 +202,8 @@ Eigen::VectorXf z = Eigen::VectorXf::Zero(9); // used in update step for innovat
 Eigen::MatrixXf H = Eigen::MatrixXf::Identity(9, 9); // check depending on sensors -> measurement provides all variables in state -> all ones?
 
 Eigen::MatrixXf Q = 0.1 * Eigen::MatrixXf::Identity(9, 9); // process noise covariance matrix Q / System prediction noise -> how accurate is model
-// takes influences like wind, bumps etc into account -> should be rather small compared to P
-// TODO: determine Q -> modell konstant
 
 // measurement noise covariance matrix
-// Eigen::MatrixXf R(9,9);
 Eigen::MatrixXf R_imu(9, 9);
 Eigen::MatrixXf R_cam(9, 9); // evtl z achse manuell hohe varianz geben
 
@@ -368,7 +360,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // printf("Angular vel: %f %f %f\n", state[6], state[7], state[8]);
 
     // Construct msg
-    filtered_pose_msg.header.frame_id = "map";
+    filtered_pose_msg.header.frame_id = "odom2";
     filtered_pose_msg.header.stamp = stamp_current;
     filtered_pose_msg.header.seq = sequence++;
 
@@ -398,7 +390,6 @@ void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
         // Sanity check, can only interpolate if buffer is fully accumulated
         if (accumulator.size() == n_acc)
         {
-
             // Use delta filter and publish the pose msg
             apply_lkf_and_publish(m);
         }
@@ -438,7 +429,6 @@ void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
         // Sanity check, can only interpolate if buffer is fully accumulated
         if (accumulator.size() == n_acc)
         {
-
             // Use delta filter and publish the pose msg
             apply_lkf_and_publish(m);
         }
@@ -483,6 +473,7 @@ int main(int argc, char **argv)
     std::string topic_publish, topic_pose_imu, topic_pose_cam;
     std::string frame_id_imu, frame_id_cam;
     nh.param<std::string>("topic_publish", topic_publish, std::string(topic_publish_default));
+    topic_publish = std::string(topic_publish_default);
     nh.param<std::string>("topic_pose_imu", topic_pose_imu, std::string(topic_pose_imu_default));
     nh.param<std::string>("topic_pose_cam", topic_pose_cam, std::string(topic_pose_cam_default));
     nh.param<std::string>("frame_id_imu", frame_id_imu, std::string(frame_id_imu_default));
@@ -583,10 +574,10 @@ int main(int argc, char **argv)
     imu_variances[2] = 0.001;  //not measured
     imu_variances[3] = 0.1; //0.009465788593315629;
     imu_variances[4] = 0.1; //0.0001922401945712851;
-    imu_variances[5] = 0.1; //0.00007255917842660958;
+    imu_variances[5] = 10; //0.00007255917842660958;
     imu_variances[6] = 0.1; //0.00008535226550528127;
     imu_variances[7] = 0.1; //0.00002174349644727122;
-    imu_variances[8] = 0.1; //0.00001210644017747147;
+    imu_variances[8] = 1; //0.00001210644017747147;
 
     R_imu << imu_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,              // var(x)
              0, imu_variances[1], 0, 0, 0, 0, 0, 0, 0,              // var(y)
@@ -619,18 +610,6 @@ int main(int argc, char **argv)
              0, 0, 0, 0, 0, 0, cam_variances[6], 0, 0,
              0, 0, 0, 0, 0, 0, 0, cam_variances[7], 0,
              0, 0, 0, 0, 0, 0, 0, 0, cam_variances[8];
-
-    /*Q <<     0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 1, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 1, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 1;
-
-    Q = Q * R_imu;*/
 
     while (ros::ok())
     {

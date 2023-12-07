@@ -2,6 +2,7 @@
 #include <ros/callback_queue.h>
 
 #include <geometry_msgs/PoseStamped.h>
+#include <sensor_msgs/Imu.h>
 #include <tf/transform_broadcaster.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_listener.h>
@@ -44,6 +45,9 @@ ros::CallbackQueue callbacks_fast;
 // Transformation between IMU and Camera pose frame (FROM Imu TO Cam)
 tf::StampedTransform tf_map_imu2cam, tf_axes_imu2cam;
 ros::Publisher filtered_pose_pub; 
+
+// Store current angular velocity
+sensor_msgs::Imu angular_vel_cur;
 
 // Debug stuff
 ros::Publisher debug_pose_pub;
@@ -117,7 +121,7 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     tfScalar t_current = stamp_current.toSec();
 
     waitForAccumulator(t_current);
-    
+
     // Convert geometry_msgs to Quaternion format
     tf::Quaternion q1, q2, q_res;
     tf::quaternionMsgToTF(accumulator.front().pose.orientation, q1);
@@ -213,6 +217,10 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     last_pose_interpolated = pose_interpolated; 
 }
 
+void orientationCallback(const sensor_msgs::Imu::ConstPtr &m) {
+    angular_vel_cur = *m;
+}
+
 void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
 {
     // Initialization on first run
@@ -303,7 +311,7 @@ int main(int argc, char** argv)
     std::string frame_id_imu, frame_id_cam;
     nh.param<std::string>("topic_publish", topic_publish, std::string(topic_publish_default)); 
     nh.param<std::string>("topic_pose_imu", topic_pose_imu, std::string(topic_pose_imu_default)); 
-    nh.param<std::string>("topic_pose_cam", topic_pose_cam, std::string(topic_pose_cam_default)); 
+    nh.param<std::string>("topic_pose_cam", topic_pose_cam, std::string(topic_pose_cam_default));
     nh.param<std::string>("frame_id_imu", frame_id_imu, std::string(frame_id_imu_default));
     nh.param<std::string>("frame_id_cam", frame_id_cam, std::string(frame_id_cam_default));
     nh.param<int>("imu_rate", imu_rate, 125); // Jaspers Code uses 125 Hz by default
@@ -357,7 +365,7 @@ int main(int argc, char** argv)
     );
 
     // Publishers and subscribers
-    ros::Subscriber cam_pose_sub, imu_pose_sub;
+    ros::Subscriber cam_pose_sub, imu_pose_sub, imu_vel_sub;
     if (interpolate == IMU) {
         cam_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
         imu_pose_sub = nh_fast.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
@@ -368,7 +376,7 @@ int main(int argc, char** argv)
         cam_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
         imu_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
     }
-    
+    imu_vel_sub = nh.subscribe<sensor_msgs::Imu>("orientation", 1000, orientationCallback);
     
     filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>(topic_publish, 1000);
     if (publish_debug_topic) debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/delta/debug", 1000);
