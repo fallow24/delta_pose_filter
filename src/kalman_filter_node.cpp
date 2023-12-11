@@ -12,11 +12,10 @@
 #include <ros/ros.h>
 
 #include <Eigen/Dense>
+#include "/home/ts/BA/linear_Kalman_Filter/lkf_catkin_ws/devel/include/realsense_pipeline_fix/CameraPoseAngularVelocity.h"
 
 /*
         - (?)covariances into matrices
-        - Interpolation of angular velocities?
-        - interpolation von cam imu daten über neue waitForAccumulator methode und neue queue
 */
 
 // Rosparam parameters
@@ -51,7 +50,7 @@ geometry_msgs::PoseStamped last_imu_pose, last_cam_pose, filtered_pose_msg;
 tf::Pose pose_interpolated, last_pose_interpolated;
 
 // Pose accumulator for the faster stream
-std::queue<geometry_msgs::PoseStamped> accumulator;
+std::queue<realsense_pipeline_fix::CameraPoseAngularVelocity> accumulator;
 // Callback queue for the faster stream. For more than 2 estimators this should be a vector of CallbackQueues.
 ros::CallbackQueue callbacks_fast;
 
@@ -62,6 +61,9 @@ ros::Publisher filtered_pose_pub;
 // Store current angular velocity provided by imus
 sensor_msgs::Imu imu_angular_vel_curr;
 sensor_msgs::Imu cam_angular_vel_curr;
+
+// custom message type to store camera pose and gyro data
+realsense_pipeline_fix::CameraPoseAngularVelocity camera_pose_imu;
 
 // norm vector for rotation of angular velocity
 Eigen::Vector3f eigen_norm_vector;
@@ -107,7 +109,7 @@ inline void waitForAccumulator(double t)
     }
 }
 
-inline void pushToAccumulator(const geometry_msgs::PoseStamped::ConstPtr &m)
+inline void pushToAccumulator(const realsense_pipeline_fix::CameraPoseAngularVelocityConstPtr &m)
 {
     accumulator.push(*m);
     if (accumulator.size() > n_acc)
@@ -188,6 +190,7 @@ Eigen::VectorXf z = Eigen::VectorXf::Zero(9); // used in update step for innovat
 // measurement prediction matrix
 Eigen::MatrixXf H = Eigen::MatrixXf::Identity(9, 9); // check depending on sensors -> measurement provides all variables in state -> all ones?
 
+// TODO: MAKE SMALLER BEFORE NEXT TEST
 Eigen::MatrixXf Q = 0.1 * Eigen::MatrixXf::Identity(9, 9); // process noise covariance matrix Q / System prediction noise -> how accurate is model
 // takes influences like wind, bumps etc into account -> should be rather small compared to P
 // TODO: determine Q -> modell konstant
@@ -264,12 +267,12 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // interpolation
     // Convert geometry_msgs to Quaternion format
     tf::Quaternion q1, q2, q_res;
-    tf::quaternionMsgToTF(accumulator.front().pose.orientation, q1);
-    tf::quaternionMsgToTF(accumulator.back().pose.orientation, q2);
+    tf::quaternionMsgToTF(accumulator.front().pose.pose.orientation, q1);
+    tf::quaternionMsgToTF(accumulator.back().pose.pose.orientation, q2);
     // Convert geometry_msgs Points to tf Vectors
     tf::Vector3 v1, v2, v_res;
-    tf::pointMsgToTF(accumulator.front().pose.position, v1);
-    tf::pointMsgToTF(accumulator.back().pose.position, v2);
+    tf::pointMsgToTF(accumulator.front().pose.pose.position, v1);
+    tf::pointMsgToTF(accumulator.back().pose.pose.position, v2);
     // Get time parameter for slerp
     double t_acc_last = accumulator.front().header.stamp.toSec();
     double t_acc_latest = accumulator.back().header.stamp.toSec();
@@ -281,11 +284,11 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // Construct interpolated result
     pose_interpolated = tf::Pose(q_res, v_res);
 
-    // rotate interpolated pose via basis change        //Noch für imu cam?
+    // Rotate interpolated pose via basis change
     pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
     pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
 
-    //angular velocities transformation
+    // Angular velocities transformation
     tf::Vector3 tf_angular_velocity_imu;
     tf::vector3MsgToTF(imu_angular_vel_curr.angular_velocity, tf_angular_velocity_imu);
     tf::Vector3 tf_angular_velocity_cam;
@@ -311,16 +314,16 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     geometry_msgs::Pose imu_diff_geom_msgs;
     tf::poseTFToMsg(imu_diff, imu_diff_geom_msgs);
 
-    // make vector 9dof for predict step
+    // Make vector 9dof for predict step
     Eigen::VectorXf eigen_angular_velocity_rotated_9dof = Eigen::VectorXf::Zero(9);
     eigen_angular_velocity_rotated_9dof[6] = eigen_angular_velocity_imu_rotated[0];
     eigen_angular_velocity_rotated_9dof[7] = eigen_angular_velocity_imu_rotated[1];
     eigen_angular_velocity_rotated_9dof[8] = eigen_angular_velocity_imu_rotated[2];
 
-    // prediction step
+    // Prediction step
     predict_state(dT, eigen_angular_velocity_rotated_9dof);
 
-    // update step
+    // Update step
     Eigen::VectorXf measurement(9);
 
     if (fabs(last_pose_interpolated.getRotation().length() - 1.0) > small_number) {
@@ -398,22 +401,23 @@ void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
 
         // Otherwise, if IMU interpolation is active, push current pose to queue
     }
-    else if (interpolate == IMU)
+    /*else if (interpolate == IMU)
     {
         pushToAccumulator(m);
-    }
+    }*/
 
     // Save current pose to last pose for next iteration
     last_imu_pose = *m;
 }
 
-void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
+void camMsgCallback(const realsense_pipeline_fix::CameraPoseAngularVelocityConstPtr &m)
 {
     // Initialization on first run
     if (!initialized_cam)
     {
         ROS_INFO("INITIALIZED CAM");
-        last_cam_pose = *m;
+        last_cam_pose = m->pose;
+        cam_angular_vel_curr = m->imu;
         initialized_cam = true;
         return;
     }
@@ -433,7 +437,8 @@ void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
         {
 
             // Use delta filter and publish the pose msg
-            apply_lkf_and_publish(m);
+            const geometry_msgs::PoseStampedConstPtr temp_pose = boost::make_shared<const geometry_msgs::PoseStamped>(m->pose);
+            apply_lkf_and_publish(temp_pose);
         }
     }
 
@@ -442,7 +447,7 @@ void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
     {
         // Testing, apply correct rotation
         tf::Stamped<tf::Pose> this_pose;
-        tf::poseStampedMsgToTF(*m, this_pose);
+        tf::poseStampedMsgToTF(m->pose, this_pose);
         tf::Pose rotated_pose;
 
         rotated_pose.mult(this_pose, tf_axes_imu2cam);
@@ -455,19 +460,13 @@ void camMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
     }
 
     // Save current pose to last pose for next iteration
-    last_cam_pose = *m;
+    last_cam_pose = m->pose;
 }
 
 void orientationImuCallback(const sensor_msgs::Imu::ConstPtr &m)
 {
     imu_angular_vel_curr = *m;
 }
-
-void orientationCamCallback(const sensor_msgs::Imu *&m){
-    cam_angular_vel_curr = *m;
-}
-
-
 
 int main(int argc, char **argv)
 {
@@ -544,21 +543,20 @@ int main(int argc, char **argv)
     ros::Subscriber cam_pose_sub, imu_pose_sub, imu_vel_sub, cam_imu_vel_sub;
     if (interpolate == IMU)
     {
-        cam_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
+        cam_pose_sub = nh.subscribe<realsense_pipeline_fix::CameraPoseAngularVelocity>("/camera/poseAndImu", 1000, camMsgCallback);
         imu_pose_sub = nh_fast.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
     }
     else if (interpolate == CAM)
     {
-        cam_pose_sub = nh_fast.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
+        cam_pose_sub = nh_fast.subscribe<realsense_pipeline_fix::CameraPoseAngularVelocity>("/camera/poseAndImu", 1000, camMsgCallback);
         imu_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
     }
     else if (interpolate == NONE)
     {
-        cam_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_cam, 1000, camMsgCallback);
+        cam_pose_sub = nh.subscribe<realsense_pipeline_fix::CameraPoseAngularVelocity>("/camera/poseAndImu", 1000, camMsgCallback);
         imu_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
     }
     imu_vel_sub = nh.subscribe<sensor_msgs::Imu>("orientation", 1000, orientationImuCallback);
-    cam_imu_vel_sub = nh.subscribe<sensor_msgs::Imu>("/camera/imu", 1000, orientationCamCallback);
 
     filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>(topic_publish, 1000);
     if (publish_debug_topic)
