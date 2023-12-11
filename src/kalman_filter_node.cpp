@@ -12,7 +12,7 @@
 #include <ros/ros.h>
 
 #include <Eigen/Dense>
-#include "/home/ts/BA/linear_Kalman_Filter/lkf_catkin_ws/devel/include/realsense_pipeline_fix/CameraPoseAngularVelocity.h"
+#include "../../../devel/include/realsense_pipeline_fix/CameraPoseAngularVelocity.h"
 
 /*
         - (?)covariances into matrices
