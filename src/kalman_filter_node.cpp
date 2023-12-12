@@ -16,6 +16,7 @@
 
 /*
         - (?)covariances into matrices
+        - check if interpolation and rotation of cam angular_vel is correct
 */
 
 // Rosparam parameters
@@ -227,6 +228,7 @@ void predict_state(const double dT, Eigen::VectorXf u)
 
     // predict state
     state = F * state + G * u;   // 9x9 * 9x1 = 9x1   //here: x_pri
+    std::cout << "state:\n" << state << std::endl;
 
     P = F * P * F.transpose() + Q; // here: calculate P_pri   // 9x9 * 9x9 * 9x9 + 9x9 = 9x9
 
@@ -264,7 +266,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     waitForAccumulator(t_current); // wait so that imu time stamp is inbetween cam time stamps
 
-    // interpolation
+    // interpolation camera pose
     // Convert geometry_msgs to Quaternion format
     tf::Quaternion q1, q2, q_res;
     tf::quaternionMsgToTF(accumulator.front().pose.pose.orientation, q1);
@@ -284,6 +286,23 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // Construct interpolated result
     pose_interpolated = tf::Pose(q_res, v_res);
 
+    // interpolation camera angular velocities
+    tf::Vector3 w1, w2, w_res;
+    w1.setX(accumulator.front().imu.angular_velocity.x);
+    w1.setY(accumulator.front().imu.angular_velocity.y);
+    w1.setZ(accumulator.front().imu.angular_velocity.z);
+
+    w2.setX(accumulator.back().imu.angular_velocity.x);
+    w2.setY(accumulator.back().imu.angular_velocity.y);
+    w2.setZ(accumulator.back().imu.angular_velocity.z);
+
+    w_res = tf::lerp(w1, w2, t);
+    // tf to sensor_msgs::Imu
+    sensor_msgs::Imu cam_angular_vel_interpolated;
+    cam_angular_vel_interpolated.angular_velocity.x = w_res.getX();
+    cam_angular_vel_interpolated.angular_velocity.y = w_res.getY();
+    cam_angular_vel_interpolated.angular_velocity.z = w_res.getZ();
+
     // Rotate interpolated pose via basis change
     pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
     pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
@@ -292,7 +311,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     tf::Vector3 tf_angular_velocity_imu;
     tf::vector3MsgToTF(imu_angular_vel_curr.angular_velocity, tf_angular_velocity_imu);
     tf::Vector3 tf_angular_velocity_cam;
-    tf::vector3MsgToTF(cam_angular_vel_curr.angular_velocity, tf_angular_velocity_cam);
+    tf::vector3MsgToTF(cam_angular_vel_interpolated.angular_velocity, tf_angular_velocity_cam);
 
     tf::Matrix3x3 rotation_matrix;
     rotation_matrix.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));
