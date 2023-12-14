@@ -73,6 +73,9 @@ tf::Vector3 tf_norm_vector;
 // Store sum of filtered delta values for rpy
 Eigen::VectorXf filtered_rpy_sum = Eigen::VectorXf::Zero(3);
 
+// Save last interpolated confidence level of camera
+float last_translated_confidence;
+
 // Debug stuff
 ros::Publisher debug_pose_pub;
 geometry_msgs::PoseStamped debug_pose_msg;
@@ -168,6 +171,22 @@ inline double getYawFromQuaternion(const geometry_msgs::Quaternion &q)
     return y;
 }
 
+inline uint32_t confidenceTranslator(const uint8_t &confidence){
+    // Confidence level (0 = Failed, 1 = Low, 2 = Medium, 3 = High confidence) will be translated to a factor, which the pose variance will be multiplied with
+    // low confidence -> higher variance -> less influence in KF
+    switch (confidence)
+    {
+    case 0:
+        return 1000;
+    case 1:
+        return 100;
+    case 2:
+        return 10;
+    default:
+        return 1;
+    }
+}
+
 //--------------LKF----------------
 
 // LKF state
@@ -237,8 +256,12 @@ void predict_state(const double dT, Eigen::VectorXf u)
 }
 
 // Update Step -> measurement comes from either imu or cam callback
-void update_state(const Eigen::VectorXf &measurement, const Eigen::MatrixXf R)
+void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R)
 {
+    // Take camera confidence and velocity into account
+    // TODO : R = R * e ^ angular velocity
+    R = R * last_translated_confidence;
+
     // innovation covariance
     Eigen::MatrixXf S = H * P * H.transpose() + R; // all 9x9
 
@@ -289,6 +312,10 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // Rotate interpolated pose via basis change
     pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
     pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
+
+    // Interpolation camera tracker confidence
+    uint8_t pose_confidence_interpolated = (t * accumulator.front().tracker_confidence) + ((1 - t) * accumulator.back().tracker_confidence);
+    last_translated_confidence = (float) confidenceTranslator(pose_confidence_interpolated);
 
     // interpolation camera angular velocities
     tf::Vector3 w1, w2, w_res;
