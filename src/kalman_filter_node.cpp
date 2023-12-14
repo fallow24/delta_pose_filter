@@ -286,26 +286,30 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // Construct interpolated result
     pose_interpolated = tf::Pose(q_res, v_res);
 
+    // Rotate interpolated pose via basis change
+    pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
+    pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
+
     // interpolation camera angular velocities
     tf::Vector3 w1, w2, w_res;
     w1.setX(accumulator.front().imu.angular_velocity.x);
     w1.setY(accumulator.front().imu.angular_velocity.y);
     w1.setZ(accumulator.front().imu.angular_velocity.z);
-
     w2.setX(accumulator.back().imu.angular_velocity.x);
     w2.setY(accumulator.back().imu.angular_velocity.y);
     w2.setZ(accumulator.back().imu.angular_velocity.z);
-
     w_res = tf::lerp(w1, w2, t);
-    // tf to sensor_msgs::Imu
+    // Rotate interpolated angular velocity via basis change
+    tf::Pose angularVelPose;  // use tf::Pose to save angular velocity in x,y,z elements for multiplication operation
+    angularVelPose.setOrigin(w_res);
+    angularVelPose.setRotation(rot_zero);
+    angularVelPose.mult(angularVelPose, tf_axes_imu2cam);
+    angularVelPose.mult(tf_map_imu2cam, angularVelPose);
+    // convert temporary pose back to sensor_msgs::Imu
     sensor_msgs::Imu cam_angular_vel_interpolated;
-    cam_angular_vel_interpolated.angular_velocity.x = w_res.getX();
-    cam_angular_vel_interpolated.angular_velocity.y = w_res.getY();
-    cam_angular_vel_interpolated.angular_velocity.z = w_res.getZ();
-
-    // Rotate interpolated pose via basis change
-    pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
-    pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
+    cam_angular_vel_interpolated.angular_velocity.x = angularVelPose.getOrigin().getX();
+    cam_angular_vel_interpolated.angular_velocity.y = angularVelPose.getOrigin().getY();
+    cam_angular_vel_interpolated.angular_velocity.z = angularVelPose.getOrigin().getZ();
 
     // Angular velocities transformation
     tf::Vector3 tf_angular_velocity_imu;
