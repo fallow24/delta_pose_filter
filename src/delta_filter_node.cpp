@@ -186,6 +186,19 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     tf::Vector3 scaled_translation = scale_factor * tf_delta.getOrigin();
     tf_delta.setOrigin(scaled_translation);
 
+    // For rotation, interpolate between cam and imu 
+    tf::Quaternion q_measured, q_interpolated;
+    tf::quaternionMsgToTF(m->pose.orientation, q_measured);
+    q_interpolated = pose_interpolated.getRotation();
+    tf::Quaternion rotation;// = tf::slerp(q_measured, q_interpolated, 0.5);
+    
+    // Fix yaw angle (WE CAN NOT TRUST CAMERA MEASUREMENTS!)
+    tf::Matrix3x3 m_measured(q_measured), m_interpolated(q_interpolated);
+    double rm, pm, ym, ri, pi, yi;
+    m_measured.getRPY(rm, pm, ym);
+    m_interpolated.getRPY(ri, pi, yi);
+    rotation.setRPY(rm, pm, ym); // This should work for all camera mountings  
+    
     // Use calculated delta to update last pose
     tf::Stamped<tf::Pose> current_pose;
     tf::poseStampedMsgToTF(filtered_pose_msg, current_pose);
@@ -196,19 +209,6 @@ void apply_delta_filter_and_publish(const geometry_msgs::PoseStamped::ConstPtr &
     filtered_pose_msg.header.frame_id = "odom";
     filtered_pose_msg.header.stamp = stamp_current;
     filtered_pose_msg.header.seq = sequence++;
-
-    // For rotation, interpolate between cam and imu 
-    tf::Quaternion q_measured, q_interpolated;
-    tf::quaternionMsgToTF(m->pose.orientation, q_measured);
-    q_interpolated = pose_interpolated.getRotation();
-    tf::Quaternion rotation = tf::slerp(q_measured, q_interpolated, 0.5);
-    
-    // Fix yaw angle
-    tf::Matrix3x3 m_measured(rotation), m_interpolated(q_interpolated);
-    double rm, pm, ym, ri, pi, yi;
-    m_measured.getRPY(rm, pm, ym);
-    m_interpolated.getRPY(ri, pi, yi);
-    rotation.setRPY(rm, pm, yi);
     tf::quaternionTFToMsg(rotation, filtered_pose_msg.pose.orientation);
     // Publish
     filtered_pose_pub.publish( filtered_pose_msg );
@@ -379,7 +379,7 @@ int main(int argc, char** argv)
     imu_vel_sub = nh.subscribe<sensor_msgs::Imu>("orientation", 1000, orientationCallback);
     
     filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>(topic_publish, 1000);
-    if (publish_debug_topic) debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/delta/debug", 1000);
+    if (publish_debug_topic) debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/delta2/debug", 1000);
 
     // Main processing loop, wait for callbacks to happen
     fast_rate = std::max(cam_rate, imu_rate);

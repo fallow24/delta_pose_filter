@@ -201,7 +201,7 @@ Eigen::VectorXf z = Eigen::VectorXf::Zero(9); // used in update step for innovat
 // measurement prediction matrix
 Eigen::MatrixXf H = Eigen::MatrixXf::Identity(9, 9); // check depending on sensors -> measurement provides all variables in state -> all ones?
 
-Eigen::MatrixXf Q = 0.1 * Eigen::MatrixXf::Identity(9, 9); // process noise covariance matrix Q / System prediction noise -> how accurate is model
+Eigen::MatrixXf Q = 0.5 * Eigen::MatrixXf::Identity(9, 9); // process noise covariance matrix Q / System prediction noise -> how accurate is model
 
 // measurement noise covariance matrix
 Eigen::MatrixXf R_imu(9, 9);
@@ -462,7 +462,7 @@ void orientationImuCallback(const sensor_msgs::Imu::ConstPtr &m)
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "delta_filter_node");
+    ros::init(argc, argv, "delta_lkf_node");
     ros::NodeHandle nh;
 
     // Nodehandle for the faster stream (should be vector for more than 2 estimators)
@@ -552,9 +552,11 @@ int main(int argc, char **argv)
     }
     imu_vel_sub = nh.subscribe<sensor_msgs::Imu>("orientation", 1000, orientationImuCallback);
 
-    filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>(topic_publish, 1000);
+    //filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>(topic_publish, 1000);
+    filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/lkf2/pose", 1000);
+    
     if (publish_debug_topic)
-        debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/lkf/debug", 1000);
+        debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/lkf2/debug", 1000);
 
     // Main processing loop, wait for callbacks to happen
     fast_rate = std::max(cam_rate, imu_rate);
@@ -572,12 +574,12 @@ int main(int argc, char **argv)
     imu_variances[0] = 0.1; // 0.000000002685523762832521;
     imu_variances[1] = 0.1; //0.0000001275576292974622;
     imu_variances[2] = 0.001;  //not measured
-    imu_variances[3] = 0.1; //0.009465788593315629;
-    imu_variances[4] = 0.1; //0.0001922401945712851;
-    imu_variances[5] = 10; //0.00007255917842660958;
+    imu_variances[3] = 0.01; //0.009465788593315629;
+    imu_variances[4] = 0.01; //0.0001922401945712851;
+    imu_variances[5] = 0.01; //0.00007255917842660958;
     imu_variances[6] = 0.1; //0.00008535226550528127;
     imu_variances[7] = 0.1; //0.00002174349644727122;
-    imu_variances[8] = 1; //0.00001210644017747147;
+    imu_variances[8] = 0.001; //0.00001210644017747147;
 
     R_imu << imu_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,              // var(x)
              0, imu_variances[1], 0, 0, 0, 0, 0, 0, 0,              // var(y)
@@ -591,15 +593,15 @@ int main(int argc, char **argv)
 
     // CAM:
     Eigen::VectorXf cam_variances = Eigen::VectorXf::Zero(9); //[x,y,z,r,p,y, angular_vel_x, angular_vel_y, angular_vel_z]^T
-    cam_variances[0] = 0.1; //0.00000001217939299950571;
-    cam_variances[1] = 0.1; //0.0000000008446764545249315;
-    cam_variances[2] = 100.0; //0.000000007498298810942597;
-    cam_variances[3] = 0.1; //0.0002543484849699809;
-    cam_variances[4] = 0.1; //0.004764144829708403;
-    cam_variances[5] = 0.01; //0.0001030990187090913;
-    imu_variances[6] = 0.1;  //not measured
-    imu_variances[7] = 0.1;  //not measured
-    imu_variances[8] = 0.1;  //not measured
+    cam_variances[0] = 100; //0.00000001217939299950571;
+    cam_variances[1] = 100; //0.0000000008446764545249315;
+    cam_variances[2] = 100; //0.000000007498298810942597;
+    cam_variances[3] = 1; //0.0002543484849699809;
+    cam_variances[4] = 1; //0.004764144829708403;
+    cam_variances[5] = 100.0; //0.0001030990187090913;
+    cam_variances[6] = 0.1;  //not measured
+    cam_variances[7] = 0.1;  //not measured
+    cam_variances[8] = 0.1;  //not measured
 
     R_cam << cam_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,
              0, cam_variances[1], 0, 0, 0, 0, 0, 0, 0,

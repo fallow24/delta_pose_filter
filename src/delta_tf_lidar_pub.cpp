@@ -66,7 +66,7 @@ int main(int argc, char** argv)
     nh.param<int>("cam_rate", spinrate, 200);
     // Publishers and subscribers
     ros::Subscriber delta_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_listen, 1000, deltaMsgCallback);
-    ros::Subscriber lkf_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>("/lkf/pose", 1000, lkfMsgCallback);
+    ros::Subscriber lkf_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>("/lkf2/pose", 1000, lkfMsgCallback);
     // Main processing loop, wait for callbacks to happen
     ros::Rate rate(spinrate*2);
     while(ros::ok()) {
