@@ -8,8 +8,7 @@
 #include <tf/transform_listener.h>
 
 #include <queue>
-
-#include <ros/ros.h>
+#include <cmath>
 
 #include <Eigen/Dense>
 #include "../../../devel/include/realsense_pipeline_fix/CameraPoseAngularVelocity.h"
@@ -247,7 +246,7 @@ void predict_state(const double dT, Eigen::VectorXf u)
 
     // predict state
     state = F * state + G * u;   // 9x9 * 9x1 = 9x1   //here: x_pri
-    std::cout << "state:\n" << state << std::endl;
+    //std::cout << "state:\n" << state << std::endl;
 
     P = F * P * F.transpose() + Q; // here: calculate P_pri   // 9x9 * 9x9 * 9x9 + 9x9 = 9x9
 
@@ -256,11 +255,11 @@ void predict_state(const double dT, Eigen::VectorXf u)
 }
 
 // Update Step -> measurement comes from either imu or cam callback
-void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R)
+void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const tf::Vector3 &angularVelocity)
 {
     // Take camera confidence and velocity into account
-    // TODO : R = R * e ^ angular velocity
-    R = R * last_translated_confidence;
+    // R = R * confidence_factor *  e ^ |angular velocity|
+    R = R * last_translated_confidence * exp(sqrt(angularVelocity.getX() * angularVelocity.getX() + angularVelocity.getY() * angularVelocity.getY() + angularVelocity.getZ() * angularVelocity.getZ()));
 
     // innovation covariance
     Eigen::MatrixXf S = H * P * H.transpose() + R; // all 9x9
@@ -391,13 +390,13 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
         getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation),
         tf_angular_velocity_imu_rotated.getX(), tf_angular_velocity_imu_rotated.getY(), tf_angular_velocity_imu_rotated.getZ();
 
-    update_state(measurement, R_imu);
+    update_state(measurement, R_imu, tf_angular_velocity_imu_rotated);
 
     measurement << cam_diff_interpolated.getOrigin().getX(), cam_diff_interpolated.getOrigin().getY(), cam_diff_interpolated.getOrigin().getZ(),
         getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation),
         tf_angular_velocity_cam_rotated.getX(), tf_angular_velocity_cam_rotated.getY(), tf_angular_velocity_cam_rotated.getZ();
 
-    update_state(measurement, R_cam);
+    update_state(measurement, R_cam, tf_angular_velocity_cam_rotated);
 
     tf::Pose filteredDeltaPose;
     filteredDeltaPose.setOrigin(tf::Vector3(state[0], state[1], state[2]));
@@ -633,7 +632,7 @@ int main(int argc, char **argv)
     imu_variances[5] = 0.1; //0.00007255917842660958;
     imu_variances[6] = 0.1; //0.00008535226550528127;
     imu_variances[7] = 0.1; //0.00002174349644727122;
-    imu_variances[8] = 0.1; //0.00001210644017747147;
+    imu_variances[8] = 1; //0.00001210644017747147;
 
     R_imu << imu_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,              // var(x)
              0, imu_variances[1], 0, 0, 0, 0, 0, 0, 0,              // var(y)
@@ -649,13 +648,13 @@ int main(int argc, char **argv)
     Eigen::VectorXf cam_variances = Eigen::VectorXf::Zero(9); //[x,y,z,r,p,y, angular_vel_x, angular_vel_y, angular_vel_z]^T
     cam_variances[0] = 0.1; //0.00000001217939299950571;
     cam_variances[1] = 0.1; //0.0000000008446764545249315;
-    cam_variances[2] = 100.0; //0.000000007498298810942597;
+    cam_variances[2] = 1.0; //0.000000007498298810942597;
     cam_variances[3] = 0.1; //0.0002543484849699809;
     cam_variances[4] = 0.1; //0.004764144829708403;
-    cam_variances[5] = 0.01; //0.0001030990187090913;
-    imu_variances[6] = 0.1;  //not measured
-    imu_variances[7] = 0.1;  //not measured
-    imu_variances[8] = 0.1;  //not measured
+    cam_variances[5] = 1.0; //0.0001030990187090913;
+    cam_variances[6] = 0.1;  //not measured
+    cam_variances[7] = 0.1;  //not measured
+    cam_variances[8] = 0.1;  //not measured
 
     R_cam << cam_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,
              0, cam_variances[1], 0, 0, 0, 0, 0, 0, 0,
