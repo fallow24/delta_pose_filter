@@ -43,6 +43,6 @@
 
     <node pkg="delta_pose_filter" type="kalman_filter_node" name="lkf_pose_filter_node" output="screen" />
 
-    <!-- node pkg="delta_pose_filter" type="vizualizer" name="delta_tf_lidar_pub" output="screen" / -->
+    <node pkg="delta_pose_filter" type="vizualizer" name="delta_tf_lidar_pub" output="screen" />
 
 </launch>

@@ -413,7 +413,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // printf("Angular vel: %f %f %f\n", state[6], state[7], state[8]);
 
     // Construct msg
-    filtered_pose_msg.header.frame_id = "map";
+    filtered_pose_msg.header.frame_id = "odom";
     filtered_pose_msg.header.stamp = stamp_current;
     filtered_pose_msg.header.seq = sequence++;
 
@@ -503,7 +503,7 @@ void camMsgCallback(const realsense_pipeline_fix::CameraPoseAngularVelocityConst
         rotated_pose.mult(tf_map_imu2cam, rotated_pose);
 
         debug_pose_msg.header = m->header;
-        debug_pose_msg.header.frame_id = "map";
+        debug_pose_msg.header.frame_id = "odom";
         tf::poseTFToMsg(rotated_pose, debug_pose_msg.pose);
         debug_pose_pub.publish(debug_pose_msg);
     }
@@ -611,7 +611,7 @@ int main(int argc, char **argv)
 
     filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>(topic_publish, 1000);
     if (publish_debug_topic)
-        debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/lkf/debug", 1000);
+        debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/lkf2/debug", 1000);
 
     // Main processing loop, wait for callbacks to happen
     fast_rate = std::max(cam_rate, imu_rate);
