@@ -19,7 +19,7 @@
 */
 
 // Rosparam parameters
-const char *topic_publish_default = "/delta/pose";
+const char *topic_publish_default = "/lkf/pose";
 const char *topic_pose_imu_default = "/posePub_merged";
 const char *topic_pose_cam_default = "/camera/pose";
 
@@ -259,7 +259,7 @@ void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const t
 {
     // Take camera confidence and velocity into account
     // R = R * confidence_factor *  e ^ |angular velocity|
-    R = R * last_translated_confidence * exp(sqrt(angularVelocity.getX() * angularVelocity.getX() + angularVelocity.getY() * angularVelocity.getY() + angularVelocity.getZ() * angularVelocity.getZ()));
+    //R = R * last_translated_confidence * exp(sqrt(angularVelocity.getX() * angularVelocity.getX() + angularVelocity.getY() * angularVelocity.getY() + angularVelocity.getZ() * angularVelocity.getZ()));
 
     // innovation covariance
     Eigen::MatrixXf S = H * P * H.transpose() + R; // all 9x9
@@ -565,6 +565,8 @@ int main(int argc, char **argv)
     initialized_cam = false;
     initialized_imu = false;
 
+    // TODO: wenn use_sim_time true -> programm kommt nicht weiter als hier
+
     // Get static tf between imu and camera frame
     tf::TransformListener tf_listener;
     tf_listener.waitForTransform(frame_id_imu, frame_id_cam, ros::Time(0), ros::Duration(1.0));                       // wait 5 seconds for tf
@@ -609,7 +611,7 @@ int main(int argc, char **argv)
 
     filtered_pose_pub = nh.advertise<geometry_msgs::PoseStamped>(topic_publish, 1000);
     if (publish_debug_topic)
-        debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/delta/debug", 1000);
+        debug_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/lkf/debug", 1000);
 
     // Main processing loop, wait for callbacks to happen
     fast_rate = std::max(cam_rate, imu_rate);
