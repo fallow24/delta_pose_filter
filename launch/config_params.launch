@@ -1,11 +1,11 @@
 <launch> 
     
     <!-- Arguments, use this to set config parameters -->
-    <arg name="topic_publish" value="/delta2/pose" />
+    <arg name="topic_publish" value="/lkf2/pose" />
     <arg name="topic_pose_imu" value="/posePub_merged" />
     <arg name="topic_pose_cam" value="/camera/pose" />
-    <arg name="frame_id_imu" value="static_imu" />
-    <arg name="frame_id_cam" value="static_cam" />
+    <arg name="frame_id_imu" value="imu_frame" />
+    <arg name="frame_id_cam" value="camera_frame" />
     <arg name="imu_rate" value="125" /> <!-- in Hz -->
     <arg name="cam_rate" value="200" /> <!-- in Hz -->
     <arg name="sphere_radius" value="0.155" /> <!-- in m -->

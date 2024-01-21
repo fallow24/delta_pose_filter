@@ -19,11 +19,11 @@
 */
 
 // Rosparam parameters
-const char *topic_publish_default = "/lkf/pose";
+const char *topic_publish_default = "/lkf2/pose";
 const char *topic_pose_imu_default = "/posePub_merged";
 const char *topic_pose_cam_default = "/camera/pose";
 
-const char *frame_id_imu_default = "map"; //"imu"; // SHOULD BE IMU!!!
+const char *frame_id_imu_default = "imu_frame"; //"imu"; // SHOULD BE IMU!!!
 const char *frame_id_cam_default = "camera_frame";
 
 int imu_rate, cam_rate;   // In Hz
@@ -258,8 +258,9 @@ void predict_state(const double dT, Eigen::VectorXf u)
 void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const tf::Vector3 &angularVelocity)
 {
     // Take camera confidence and velocity into account
-    // R = R * confidence_factor *  e ^ |angular velocity|
-    //R = R * last_translated_confidence * exp(sqrt(angularVelocity.getX() * angularVelocity.getX() + angularVelocity.getY() * angularVelocity.getY() + angularVelocity.getZ() * angularVelocity.getZ()));
+    // Low confidence -> higher variance -> more uncertainty
+    // High angular velocity -> higher variance -> more uncertainty
+    R = R * last_translated_confidence * exp(angularVelocity.length());
 
     // innovation covariance
     Eigen::MatrixXf S = H * P * H.transpose() + R; // all 9x9
