@@ -25,8 +25,8 @@
     <param name="debug_topics" type="bool" value="$(arg debug_topics)"/> 
 
     <!-- Arguments for the vizualiser node: pose to lidar -->
-    <arg name="topic_listen" value="/delta2/pose" />
-    <arg name="global_frame" value="map" />
+    <arg name="topic_listen" value="/lkf2/pose" />
+    <arg name="global_frame" value="map3" />
     <arg name="pose_frame" value="odom" />
     <arg name="lidar_frame" value="pandar_frame" />
 
@@ -37,7 +37,7 @@
     <!-- Defines the transform between CAM and IMU coordinate systems in the global map frame, e.g.: IMU moves in x, CAM in y -->
     <node pkg="tf" type="static_transform_publisher" name="extr_imu_2_cam_stfb" args="0 0 0 -1.570796 0 0 $(arg frame_id_imu) $(arg frame_id_cam) 200" />
     <node pkg="tf" type="static_transform_publisher" name="lidar_2_odom_stfb" args="0 0 0 3.141592 0 0 $(arg pose_frame) $(arg lidar_frame) 200" />
-    <node pkg="tf" type="static_transform_publisher" name="odom_is_imu_frame_stfb" args="0 0 0 0 0 0 $(arg pose_frame) imu_frame 200" />
+    <node pkg="tf" type="static_transform_publisher" name="odom_is_imu_frame_stfb" args="0 0 0 0 0 0 $(arg pose_frame) $(arg frame_id_imu) 200" />
 
     <!-- node pkg="delta_pose_filter" type="filter_node" name="delta_pose_filter_node" output="screen" / -->
 

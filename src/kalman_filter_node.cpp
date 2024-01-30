@@ -16,6 +16,13 @@
 /*
         - (?)covariances into matrices
         - check if interpolation and rotation of cam angular_vel is correct
+
+        - No use_sim_time and no --clock to get LKF output from robotik halle bagfiles
+        - Check angular vel length
+        - angular vel component wise?
+        - Check wether R should be high in S calculation
+        - scaling limitations for euler factor to avoid instability
+        - 11-27 has heavy angular acc at end
 */
 
 // Rosparam parameters
@@ -255,12 +262,22 @@ void predict_state(const double dT, Eigen::VectorXf u)
 }
 
 // Update Step -> measurement comes from either imu or cam callback
-void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const tf::Vector3 &angularVelocity)
+void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const tf::Vector3 &angularVelocity, bool isCamera)
 {
     // Take camera confidence and velocity into account
     // Low confidence -> higher variance -> more uncertainty
     // High angular velocity -> higher variance -> more uncertainty
-    R = R * last_translated_confidence * exp(angularVelocity.length());
+    
+    float temp = 0.1 * exp(angularVelocity.length());
+    std::cout << "angularVel = \t" << temp << std::endl;
+
+    if(isCamera){
+        R = R * last_translated_confidence;// * (1 * exp(angularVelocity.length()));   //use camera confidence in cameras update step
+    }
+
+    else{
+        R = R * (temp);    //ignore camera confidence in imus update step
+    }
 
     // innovation covariance
     Eigen::MatrixXf S = H * P * H.transpose() + R; // all 9x9
@@ -391,13 +408,13 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
         getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation),
         tf_angular_velocity_imu_rotated.getX(), tf_angular_velocity_imu_rotated.getY(), tf_angular_velocity_imu_rotated.getZ();
 
-    update_state(measurement, R_imu, tf_angular_velocity_imu_rotated);
+    update_state(measurement, R_imu, tf_angular_velocity_imu_rotated, false);
 
     measurement << cam_diff_interpolated.getOrigin().getX(), cam_diff_interpolated.getOrigin().getY(), cam_diff_interpolated.getOrigin().getZ(),
         getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation),
         tf_angular_velocity_cam_rotated.getX(), tf_angular_velocity_cam_rotated.getY(), tf_angular_velocity_cam_rotated.getZ();
 
-    update_state(measurement, R_cam, tf_angular_velocity_cam_rotated);
+    update_state(measurement, R_cam, tf_angular_velocity_cam_rotated, true);
 
     tf::Pose filteredDeltaPose;
     filteredDeltaPose.setOrigin(tf::Vector3(state[0], state[1], state[2]));
@@ -414,7 +431,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // printf("Angular vel: %f %f %f\n", state[6], state[7], state[8]);
 
     // Construct msg
-    filtered_pose_msg.header.frame_id = "odom";
+    filtered_pose_msg.header.frame_id = "map3";
     filtered_pose_msg.header.stamp = stamp_current;
     filtered_pose_msg.header.seq = sequence++;
 
@@ -504,7 +521,7 @@ void camMsgCallback(const realsense_pipeline_fix::CameraPoseAngularVelocityConst
         rotated_pose.mult(tf_map_imu2cam, rotated_pose);
 
         debug_pose_msg.header = m->header;
-        debug_pose_msg.header.frame_id = "odom";
+        debug_pose_msg.header.frame_id = "map3";
         tf::poseTFToMsg(rotated_pose, debug_pose_msg.pose);
         debug_pose_pub.publish(debug_pose_msg);
     }
@@ -570,8 +587,8 @@ int main(int argc, char **argv)
 
     // Get static tf between imu and camera frame
     tf::TransformListener tf_listener;
-    tf_listener.waitForTransform(frame_id_imu, frame_id_cam, ros::Time(0), ros::Duration(1.0));                       // wait 5 seconds for tf
-    tf_listener.waitForTransform(std::string("axes_cam"), std::string("axes_imu"), ros::Time(0), ros::Duration(1.0)); // wait 5 seconds for tf
+    tf_listener.waitForTransform(std::string("axes_cam"), std::string("axes_imu"), ros::Time(0), ros::Duration(5.0)); // wait 2 seconds for tf
+    tf_listener.waitForTransform(frame_id_imu, frame_id_cam, ros::Time(0), ros::Duration(5.0));                       // wait 2 seconds for tf
     tf_listener.lookupTransform(frame_id_imu, frame_id_cam, ros::Time(0), tf_map_imu2cam);
     tf_listener.lookupTransform(std::string("axes_cam"), std::string("axes_imu"), ros::Time(0), tf_axes_imu2cam);
     ROS_INFO("Found global transform imu -> cam:\n[x,y,z]=%f, %f, %f\n[x,y,z,w]=%f, %f, %f, %f",

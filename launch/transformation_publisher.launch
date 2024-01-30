@@ -1,0 +1,22 @@
+<launch>
+
+
+    <arg name="topic_publish" value="/delta2/pose" />
+    <arg name="topic_pose_imu" value="/posePub_merged" />
+    <arg name="topic_pose_cam" value="/camera/pose" />
+    <arg name="frame_id_imu" value="static_imu" />
+    <arg name="frame_id_cam" value="static_cam" />
+
+    <arg name="topic_listen" value="/delta2/pose" />
+    <arg name="global_frame" value="map" />
+    <arg name="pose_frame" value="odom" />
+    <arg name="lidar_frame" value="pandar_frame" />
+
+    <!-- Defines the transform between CAM and IMU coordinate system axes, e.g.: IMU x axis == CAM z axis -->
+    <node pkg="tf" type="static_transform_publisher" name="left_cam_2_right_imu_stfb" args="0 0 0 1.570796 0 3.141592 axes_cam axes_imu 200" />
+    <!-- Defines the transform between CAM and IMU coordinate systems in the global map frame, e.g.: IMU moves in x, CAM in y -->
+    <node pkg="tf" type="static_transform_publisher" name="extr_imu_2_cam_stfb" args="0 0 0 -1.570796 0 0 $(arg frame_id_imu) $(arg frame_id_cam) 200" />
+    <node pkg="tf" type="static_transform_publisher" name="lidar_2_odom_stfb" args="0 0 0 3.141592 0 0 $(arg pose_frame) $(arg lidar_frame) 200" />
+    <node pkg="tf" type="static_transform_publisher" name="odom_is_imu_frame_stfb" args="0 0 0 0 0 0 $(arg pose_frame) imu_frame 200" />
+
+</launch>

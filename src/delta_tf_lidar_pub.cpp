@@ -10,7 +10,7 @@
 
 // Rosparam parameters
 const char* topic_default = "/delta/pose";
-const char* global_frame_default = "map";
+const char* global_frame_default = "map3";
 const char* pose_frame_default = "odom";
 std::string global_frame, pose_frame;
 
@@ -49,7 +49,7 @@ void lkfMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
     tf::Quaternion quat;
     tf::quaternionMsgToTF(m->pose.orientation, quat);
     transform.setRotation(quat);        
-    br.sendTransform(tf::StampedTransform(transform.inverse(), m->header.stamp, "odom", "map3"));
+    br.sendTransform(tf::StampedTransform(transform.inverse(), m->header.stamp, pose_frame, global_frame));
 }
 
 int main(int argc, char** argv)
@@ -66,7 +66,7 @@ int main(int argc, char** argv)
     nh.param<int>("cam_rate", spinrate, 200);
     // Publishers and subscribers
     // ros::Subscriber delta_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_listen, 1000, deltaMsgCallback);
-    ros::Subscriber lkf_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>("/delta2/pose", 1000, lkfMsgCallback);
+    ros::Subscriber lkf_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>("/lkf2/pose", 1000, lkfMsgCallback);
     // Main processing loop, wait for callbacks to happen
     ros::Rate rate(spinrate*2);
     while(ros::ok()) {
