@@ -20,9 +20,10 @@
         - No use_sim_time and no --clock to get LKF output from robotik halle bagfiles
         - Check angular vel length
         - angular vel component wise?
-        - Check wether R should be high in S calculation
+        - also scale Q accordingly?
         - scaling limitations for euler factor to avoid instability
         - 11-27 has heavy angular acc at end
+        - confidence = 0?;
 */
 
 // Rosparam parameters
@@ -193,6 +194,9 @@ inline uint32_t confidenceTranslator(const uint8_t &confidence){
     }
 }
 
+const float MIN_SCALING_FACTOR = 0.1;
+const float MAX_SCALING_FACTOR = 10.0;
+
 //--------------LKF----------------
 
 // LKF state
@@ -217,7 +221,7 @@ Eigen::VectorXf z = Eigen::VectorXf::Zero(9); // used in update step for innovat
 Eigen::MatrixXf H = Eigen::MatrixXf::Identity(9, 9); // check depending on sensors -> measurement provides all variables in state -> all ones?
 
 // TODO: MAKE SMALLER BEFORE NEXT TEST
-Eigen::MatrixXf Q = 0.1 * Eigen::MatrixXf::Identity(9, 9); // process noise covariance matrix Q / System prediction noise -> how accurate is model
+Eigen::MatrixXf Q_init = 1 * Eigen::MatrixXf::Identity(9, 9); // process noise covariance matrix Q / System prediction noise -> how accurate is model
 // takes influences like wind, bumps etc into account -> should be rather small compared to P
 // TODO: determine Q -> modell konstant
 
@@ -228,7 +232,7 @@ Eigen::MatrixXf R_cam(9, 9); // evtl z achse manuell hohe varianz geben
 
 
 // Prediction Step
-void predict_state(const double dT, Eigen::VectorXf u)
+void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
 {
 
     F <<0, 0, 0, 0, 0, 0, 0, (dT * r_sphere), 0,
@@ -262,23 +266,8 @@ void predict_state(const double dT, Eigen::VectorXf u)
 }
 
 // Update Step -> measurement comes from either imu or cam callback
-void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const tf::Vector3 &angularVelocity, bool isCamera)
+void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const tf::Vector3 &angularVelocity)
 {
-    // Take camera confidence and velocity into account
-    // Low confidence -> higher variance -> more uncertainty
-    // High angular velocity -> higher variance -> more uncertainty
-    
-    float temp = 0.1 * exp(angularVelocity.length());
-    std::cout << "angularVel = \t" << temp << std::endl;
-
-    if(isCamera){
-        R = R * last_translated_confidence;// * (1 * exp(angularVelocity.length()));   //use camera confidence in cameras update step
-    }
-
-    else{
-        R = R * (temp);    //ignore camera confidence in imus update step
-    }
-
     // innovation covariance
     Eigen::MatrixXf S = H * P * H.transpose() + R; // all 9x9
 
@@ -293,7 +282,6 @@ void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const t
 
 }
 
-// PoseStamped -> Pose, Header -> Pose: Point, Quaternion -> Point: x,y,z; Quaternion: x,y,z,w
 void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 {
 
@@ -332,6 +320,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     // Interpolation camera tracker confidence
     uint8_t pose_confidence_interpolated = (t * accumulator.front().tracker_confidence) + ((1 - t) * accumulator.back().tracker_confidence);
+    //printf("confidence_interpolated = %f \t confidence_raw = %f \n", pose_confidence_interpolated, accumulator.front().tracker_confidence);
     last_translated_confidence = (float) confidenceTranslator(pose_confidence_interpolated);
 
     // interpolation camera angular velocities
@@ -387,8 +376,29 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     eigen_angular_velocity_rotated_9dof[7] = eigen_angular_velocity_imu_rotated[1];
     eigen_angular_velocity_rotated_9dof[8] = eigen_angular_velocity_imu_rotated[2];
 
+
+    // Calculate Scaling factor for covariance matrices
+
+    // Take camera confidence and velocity into account
+    // Low confidence -> higher variance -> more uncertainty
+    // High angular velocity -> higher variance -> more uncertainty
+    
+    float scalingFactorCamera = exp(tf_angular_velocity_cam_rotated.length()); //last_translated_confidence;
+    float scalingFactorImu = exp(tf_angular_velocity_imu_rotated.length());
+
+    // std::cout << "angularVel = \t" << angularVelocity.length() << std::endl; //<< "\t with confidence factor = \t" << last_translated_confidence << std::endl;
+    // std::cout << "scalingFactorCam = \t" << scalingFactorCamera << std::endl;
+    // std::cout << "scalingFactorImu = \t" << scalingFactorImu << std::endl;
+
+    scalingFactorCamera = (scalingFactorCamera < MIN_SCALING_FACTOR) ? MIN_SCALING_FACTOR : (scalingFactorCamera > MAX_SCALING_FACTOR) ? MAX_SCALING_FACTOR : scalingFactorCamera;
+    scalingFactorImu = (scalingFactorImu < MIN_SCALING_FACTOR) ? MIN_SCALING_FACTOR : (scalingFactorImu > MAX_SCALING_FACTOR) ? MAX_SCALING_FACTOR : scalingFactorImu;
+
+    Eigen::MatrixXf R_cam_scaled = R_cam;// * scalingFactorCamera;
+    Eigen::MatrixXf R_imu_scaled = R_imu;// * scalingFactorImu;
+    
+
     // Prediction step
-    predict_state(dT, eigen_angular_velocity_rotated_9dof);
+    predict_state(dT, eigen_angular_velocity_rotated_9dof, Q_init);
 
     // Update step
     Eigen::VectorXf measurement(9);
@@ -408,13 +418,13 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
         getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation),
         tf_angular_velocity_imu_rotated.getX(), tf_angular_velocity_imu_rotated.getY(), tf_angular_velocity_imu_rotated.getZ();
 
-    update_state(measurement, R_imu, tf_angular_velocity_imu_rotated, false);
+    update_state(measurement, R_imu_scaled, tf_angular_velocity_imu_rotated);
 
     measurement << cam_diff_interpolated.getOrigin().getX(), cam_diff_interpolated.getOrigin().getY(), cam_diff_interpolated.getOrigin().getZ(),
         getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation),
         tf_angular_velocity_cam_rotated.getX(), tf_angular_velocity_cam_rotated.getY(), tf_angular_velocity_cam_rotated.getZ();
 
-    update_state(measurement, R_cam, tf_angular_velocity_cam_rotated, true);
+    update_state(measurement, R_cam_scaled, tf_angular_velocity_cam_rotated);
 
     tf::Pose filteredDeltaPose;
     filteredDeltaPose.setOrigin(tf::Vector3(state[0], state[1], state[2]));
@@ -462,7 +472,7 @@ void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
         if (accumulator.size() == n_acc)
         {
 
-            // Use delta filter and publish the pose msg
+            // Use kalman filter and publish the pose msg
             apply_lkf_and_publish(m);
         }
 
@@ -493,6 +503,7 @@ void camMsgCallback(const realsense_pipeline_fix::CameraPoseAngularVelocityConst
     if (interpolate == CAM)
     {
         pushToAccumulator(m);
+        //std::cout << "cam_msg_confidence: " << m->tracker_confidence << std::endl;
 
         // Otherwise, if IMU interpolation is active, wait for the IMU poses in the queue
     }
@@ -503,7 +514,7 @@ void camMsgCallback(const realsense_pipeline_fix::CameraPoseAngularVelocityConst
         if (accumulator.size() == n_acc)
         {
 
-            // Use delta filter and publish the pose msg
+            // Use kalman filter and publish the pose msg
             const geometry_msgs::PoseStampedConstPtr temp_pose = boost::make_shared<const geometry_msgs::PoseStamped>(m->pose);
             apply_lkf_and_publish(temp_pose);
         }
@@ -672,9 +683,9 @@ int main(int argc, char **argv)
     cam_variances[3] = 0.1; //0.0002543484849699809;
     cam_variances[4] = 0.1; //0.004764144829708403;
     cam_variances[5] = 1.0; //0.0001030990187090913;
-    cam_variances[6] = 0.1;  //not measured
-    cam_variances[7] = 0.1;  //not measured
-    cam_variances[8] = 0.1;  //not measured
+    cam_variances[6] = 0.1;  //not determined
+    cam_variances[7] = 0.1;  //not determined
+    cam_variances[8] = 0.1;  //not determined
 
     R_cam << cam_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,
              0, cam_variances[1], 0, 0, 0, 0, 0, 0, 0,
