@@ -14,16 +14,21 @@
 #include "../../../devel/include/realsense_pipeline_fix/CameraPoseAngularVelocity.h"
 
 /*
-        - (?)covariances into matrices
-
         - No use_sim_time and no --clock to get LKF output from robotik halle bagfiles
-        - Check angular vel length
-        - angular vel component wise?
-        - also scale Q to keep ( ||Q|| / ||R|| ) ratio?
+        - angular vel component wise
+        - also scale Q to keep ( ||Q|| / ||R|| ) ratio
         - scaling limitations for euler factor to avoid instability
-        - confidence = 0?;
 
-        - 11-27 has heavy angular acc at end
+        - R only scaling:
+            - camera confidence with 1,10,100,1000 doesnt do much difference for scaling
+            - taking e^||ang_vel|| makes things worse (for imu and cam) -> more pitch errors and random loops in circle path (corresponding to wave like behaviour in plot?)
+            - exp componentwise about same result
+        - R & Q scaling:
+            - Q * 1 / avg(R_scalingFactor) makes things even worse
+
+        - use different bag file
+        - maybe linear or log fct to take slow speed into account, so that slow speed weighs sensors more. exp can only make R worse but not better
+        
 
 */
 
@@ -323,6 +328,8 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     uint8_t pose_confidence_interpolated = (t * accumulator.front().tracker_confidence) + ((1 - t) * accumulator.back().tracker_confidence);
     last_translated_confidence = (float) confidenceTranslator(pose_confidence_interpolated);
 
+    //ROS_INFO("interpolated confidence: %d", confidenceTranslator(pose_confidence_interpolated));
+
     // interpolation camera angular velocities
     tf::Vector3 w1, w2, w_res;
     w1.setX(accumulator.front().imu.angular_velocity.x);
@@ -383,8 +390,9 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // Low confidence -> higher variance -> more uncertainty
     // High angular velocity -> higher variance -> more uncertainty
     
-    float scalingFactorCamera = last_translated_confidence; //exp(tf_angular_velocity_cam_rotated.length()); //last_translated_confidence;
-    float scalingFactorImu = 1.0; //exp(tf_angular_velocity_imu_rotated.length());
+    // scalar - wise
+    float scalingFactorCamera = last_translated_confidence * exp(tf_angular_velocity_cam_rotated.length()); //exp(tf_angular_velocity_cam_rotated.length()); //last_translated_confidence;
+    float scalingFactorImu = exp(tf_angular_velocity_imu_rotated.length());
 
     // std::cout << "angularVel = \t" << angularVelocity.length() << std::endl; //<< "\t with confidence factor = \t" << last_translated_confidence << std::endl;
     // std::cout << "scalingFactorCam = \t" << scalingFactorCamera << std::endl;
@@ -393,12 +401,33 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     scalingFactorCamera = (scalingFactorCamera < MIN_SCALING_FACTOR) ? MIN_SCALING_FACTOR : (scalingFactorCamera > MAX_SCALING_FACTOR) ? MAX_SCALING_FACTOR : scalingFactorCamera;
     scalingFactorImu = (scalingFactorImu < MIN_SCALING_FACTOR) ? MIN_SCALING_FACTOR : (scalingFactorImu > MAX_SCALING_FACTOR) ? MAX_SCALING_FACTOR : scalingFactorImu;
 
+    // component - wise
+    Eigen::VectorXf scalingVectorCamera = Eigen::VectorXf::Ones(9);
+    scalingVectorCamera[0] = exp(fabs(tf_angular_velocity_cam_rotated.getX()));
+    scalingVectorCamera[1] = exp(fabs(tf_angular_velocity_cam_rotated.getY()));
+    scalingVectorCamera[2] = exp(fabs(tf_angular_velocity_cam_rotated.getZ()));
+    scalingVectorCamera[6] = exp(fabs(tf_angular_velocity_cam_rotated.getX()));
+    scalingVectorCamera[7] = exp(fabs(tf_angular_velocity_cam_rotated.getY()));
+    scalingVectorCamera[8] = exp(fabs(tf_angular_velocity_cam_rotated.getZ()));
+
+    Eigen::VectorXf scalingVectorImu = Eigen::VectorXf::Ones(9);
+    scalingVectorImu[0] = exp(fabs(tf_angular_velocity_imu_rotated.getX()));
+    scalingVectorImu[1] = exp(fabs(tf_angular_velocity_imu_rotated.getY()));
+    scalingVectorImu[2] = exp(fabs(tf_angular_velocity_imu_rotated.getZ()));
+    scalingVectorImu[6] = exp(fabs(tf_angular_velocity_imu_rotated.getX()));
+    scalingVectorImu[7] = exp(fabs(tf_angular_velocity_imu_rotated.getY()));
+    scalingVectorImu[8] = exp(fabs(tf_angular_velocity_imu_rotated.getZ()));
+
+    scalingVectorCamera = last_translated_confidence * scalingVectorCamera;
+
     Eigen::MatrixXf R_cam_scaled = R_cam * scalingFactorCamera;
-    Eigen::MatrixXf R_imu_scaled = R_imu;// * scalingFactorImu;
+    Eigen::MatrixXf R_imu_scaled = R_imu * scalingFactorImu;
+
+    Eigen::MatrixXf Q_scaled = Q_init;//* (1 / ((scalingFactorCamera + scalingFactorImu) / 2.0)); //multiply Q with inverse of avg scaling factor of R matrices
     
 
     // Prediction step
-    predict_state(dT, eigen_angular_velocity_rotated_9dof, Q_init);
+    predict_state(dT, eigen_angular_velocity_rotated_9dof, Q_scaled);
 
     // Update step
     Eigen::VectorXf measurement(9);
@@ -593,8 +622,6 @@ int main(int argc, char **argv)
     // Initialize variables
     initialized_cam = false;
     initialized_imu = false;
-
-    // TODO: wenn use_sim_time true -> programm kommt nicht weiter als hier
 
     // Get static tf between imu and camera frame
     tf::TransformListener tf_listener;
