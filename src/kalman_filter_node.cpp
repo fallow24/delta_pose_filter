@@ -23,12 +23,20 @@
             - camera confidence with 1,10,100,1000 doesnt do much difference for scaling
             - taking e^||ang_vel|| makes things worse (for imu and cam) -> more pitch errors and random loops in circle path (corresponding to wave like behaviour in plot?)
             - exp componentwise about same result
+            - ln instead of exp also makes it worse than static R but better than exp, due to smaller scaling factors (?)
+            - component wise ln even worse
+            - 10 ^ (log(|ang_vel) + 1) is worst
         - R & Q scaling:
-            - Q * 1 / avg(R_scalingFactor) makes things even worse
+            - Q / avg(R_scalingFactor) makes things even worse
+        
 
         - use different bag file
         - maybe linear or log fct to take slow speed into account, so that slow speed weighs sensors more. exp can only make R worse but not better
-        
+
+        - rotation matrix nicht aus state wegen delta sondern filteredDeltaPose
+        - orientation in u vector   
+
+        - punktwolken zeigen
 
 */
 
@@ -37,7 +45,7 @@ const char *topic_publish_default = "/lkf2/pose";
 const char *topic_pose_imu_default = "/posePub_merged";
 const char *topic_pose_cam_default = "/camera/pose";
 
-const char *frame_id_imu_default = "imu_frame"; //"imu"; // SHOULD BE IMU!!!
+const char *frame_id_imu_default = "imu_frame"; // SHOULD BE IMU!!!
 const char *frame_id_cam_default = "camera_frame";
 
 int imu_rate, cam_rate;   // In Hz
@@ -184,10 +192,13 @@ inline double getYawFromQuaternion(const geometry_msgs::Quaternion &q)
     return y;
 }
 
-inline uint32_t confidenceTranslator(const uint8_t &confidence){
+inline float confidenceTranslator(const uint8_t &confidence){
     // Confidence level (0 = Failed, 1 = Low, 2 = Medium, 3 = High confidence) will be translated to a factor, which the pose variance will be multiplied with
     // low confidence -> higher variance -> less influence in KF
-    switch (confidence)
+
+    // == switch case underneath
+    return pow(10, 3 - confidence);
+    /*switch (confidence)
     {
     case 0:
         return 1000.0;
@@ -197,11 +208,11 @@ inline uint32_t confidenceTranslator(const uint8_t &confidence){
         return 10.0;
     default:
         return 1.0;
-    }
+    }*/
 }
 
 const float MIN_SCALING_FACTOR = 0.01;
-const float MAX_SCALING_FACTOR = 100.0;
+const float MAX_SCALING_FACTOR = 1000.0;
 
 //--------------LKF----------------
 
@@ -244,9 +255,9 @@ void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
     F <<0, 0, 0, 0, 0, 0, 0, (dT * r_sphere), 0,
         0, 0, 0, 0, 0, 0, -(dT * r_sphere), 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 1, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 1, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 1, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0;
@@ -254,17 +265,15 @@ void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
     G << 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 1, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 1, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 1, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 1, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 1, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 1;
 
     // predict state
     state = F * state + G * u;   // 9x9 * 9x1 = 9x1   //here: x_pri
-    //std::cout << "state:\n" << state << std::endl;
-
     P = F * P * F.transpose() + Q; // here: calculate P_pri   // 9x9 * 9x9 * 9x9 + 9x9 = 9x9
 
     // predict measurement
@@ -300,6 +309,13 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     waitForAccumulator(t_current); // wait so that imu time stamp is inbetween cam time stamps
 
+    // pose that will be published
+    tf::Pose filteredDeltaPose;
+    tf::Stamped<tf::Pose> filteredPose;
+    tf::poseStampedMsgToTF(filtered_pose_msg, filteredPose);     
+    tf::Quaternion current_rotation = filteredPose.getRotation();
+    tf::Transform current_tf(current_rotation);
+
     // interpolation camera pose
     // Convert geometry_msgs to Quaternion format
     tf::Quaternion q1, q2, q_res;
@@ -319,7 +335,6 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     v_res = tf::lerp(v1, v2, t);
     // Construct interpolated result
     pose_interpolated = tf::Pose(q_res, v_res);
-
     // Rotate interpolated pose via basis change
     pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
     pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
@@ -327,8 +342,6 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // Interpolation camera tracker confidence
     uint8_t pose_confidence_interpolated = (t * accumulator.front().tracker_confidence) + ((1 - t) * accumulator.back().tracker_confidence);
     last_translated_confidence = (float) confidenceTranslator(pose_confidence_interpolated);
-
-    //ROS_INFO("interpolated confidence: %d", confidenceTranslator(pose_confidence_interpolated));
 
     // interpolation camera angular velocities
     tf::Vector3 w1, w2, w_res;
@@ -357,10 +370,9 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     tf::Vector3 tf_angular_velocity_cam;
     tf::vector3MsgToTF(cam_angular_vel_interpolated.angular_velocity, tf_angular_velocity_cam);
 
-    tf::Matrix3x3 rotation_matrix;
-    rotation_matrix.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));
-    tf::Vector3 tf_angular_velocity_imu_rotated = rotation_matrix.inverse() * tf_angular_velocity_imu;
-    tf::Vector3 tf_angular_velocity_cam_rotated = rotation_matrix.inverse() * tf_angular_velocity_cam;
+    // Rotate angular velocities -> local to global frame
+    tf::Vector3 tf_angular_velocity_imu_rotated = current_tf * tf_angular_velocity_imu;
+    tf::Vector3 tf_angular_velocity_cam_rotated = current_tf * tf_angular_velocity_cam;
 
     Eigen::Vector3f eigen_angular_velocity_imu_rotated;
     eigen_angular_velocity_imu_rotated[0] = tf_angular_velocity_imu_rotated.getX();
@@ -377,38 +389,49 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     geometry_msgs::Pose imu_diff_geom_msgs;
     tf::poseTFToMsg(imu_diff, imu_diff_geom_msgs);
 
-    // Make vector 9dof for predict step
-    Eigen::VectorXf eigen_angular_velocity_rotated_9dof = Eigen::VectorXf::Zero(9);
-    eigen_angular_velocity_rotated_9dof[6] = eigen_angular_velocity_imu_rotated[0];
-    eigen_angular_velocity_rotated_9dof[7] = eigen_angular_velocity_imu_rotated[1];
-    eigen_angular_velocity_rotated_9dof[8] = eigen_angular_velocity_imu_rotated[2];
+    // 9dof u vector for predict step
+    Eigen::VectorXf systemInput = Eigen::VectorXf::Zero(9);
+    systemInput[3] = getRollFromQuaternion(imu_diff_geom_msgs.orientation);
+    systemInput[4] = getPitchFromQuaternion(imu_diff_geom_msgs.orientation);
+    systemInput[5] = getYawFromQuaternion(imu_diff_geom_msgs.orientation);
+    systemInput[6] = eigen_angular_velocity_imu_rotated[0];
+    systemInput[7] = eigen_angular_velocity_imu_rotated[1];
+    systemInput[8] = eigen_angular_velocity_imu_rotated[2];
 
 
-    // Calculate Scaling factor for covariance matrices
-
-    // Take camera confidence and velocity into account
-    // Low confidence -> higher variance -> more uncertainty
-    // High angular velocity -> higher variance -> more uncertainty
+    // Calculate Scaling factor for covariance matrices by using angular velocities and confidence of T265
     
-    // scalar - wise
-    float scalingFactorCamera = last_translated_confidence * exp(tf_angular_velocity_cam_rotated.length()); //exp(tf_angular_velocity_cam_rotated.length()); //last_translated_confidence;
-    float scalingFactorImu = exp(tf_angular_velocity_imu_rotated.length());
+    // Scalar - wise
+    /*float scalingFactorCamera = last_translated_confidence * exp(tf_angular_velocity_cam_rotated.length()); //exp(tf_angular_velocity_cam_rotated.length()); //last_translated_confidence;
+    float scalingFactorImu = exp(tf_angular_velocity_imu_rotated.length());*/
 
-    // std::cout << "angularVel = \t" << angularVelocity.length() << std::endl; //<< "\t with confidence factor = \t" << last_translated_confidence << std::endl;
-    // std::cout << "scalingFactorCam = \t" << scalingFactorCamera << std::endl;
-    // std::cout << "scalingFactorImu = \t" << scalingFactorImu << std::endl;
+    /*float scalingFactorCamera = last_translated_confidence; //exp(tf_angular_velocity_cam_rotated.length()); //last_translated_confidence;
+    float scalingFactorImu = log(tf_angular_velocity_imu_rotated.length() + 1);*/
 
-    scalingFactorCamera = (scalingFactorCamera < MIN_SCALING_FACTOR) ? MIN_SCALING_FACTOR : (scalingFactorCamera > MAX_SCALING_FACTOR) ? MAX_SCALING_FACTOR : scalingFactorCamera;
-    scalingFactorImu = (scalingFactorImu < MIN_SCALING_FACTOR) ? MIN_SCALING_FACTOR : (scalingFactorImu > MAX_SCALING_FACTOR) ? MAX_SCALING_FACTOR : scalingFactorImu;
+    // Scaling factor limiter
+    /*scalingFactorCamera = (scalingFactorCamera < MIN_SCALING_FACTOR) ? MIN_SCALING_FACTOR : (scalingFactorCamera > MAX_SCALING_FACTOR) ? MAX_SCALING_FACTOR : scalingFactorCamera;
+    scalingFactorImu = (scalingFactorImu < MIN_SCALING_FACTOR) ? MIN_SCALING_FACTOR : (scalingFactorImu > MAX_SCALING_FACTOR) ? MAX_SCALING_FACTOR : scalingFactorImu;*/
 
-    // component - wise
-    Eigen::VectorXf scalingVectorCamera = Eigen::VectorXf::Ones(9);
+    // component - wise (euler-fct)
+    /*Eigen::VectorXf scalingVectorCamera = Eigen::VectorXf::Ones(9);
     scalingVectorCamera[0] = exp(fabs(tf_angular_velocity_cam_rotated.getX()));
     scalingVectorCamera[1] = exp(fabs(tf_angular_velocity_cam_rotated.getY()));
     scalingVectorCamera[2] = exp(fabs(tf_angular_velocity_cam_rotated.getZ()));
     scalingVectorCamera[6] = exp(fabs(tf_angular_velocity_cam_rotated.getX()));
     scalingVectorCamera[7] = exp(fabs(tf_angular_velocity_cam_rotated.getY()));
     scalingVectorCamera[8] = exp(fabs(tf_angular_velocity_cam_rotated.getZ()));
+
+    scalingMatrixCamera << scalingVectorCamera[0], 0, 0, 0, 0, 0, 0, 0, 0,
+             0, scalingVectorCamera[1], 0, 0, 0, 0, 0, 0, 0,
+             0, 0, scalingVectorCamera[2], 0, 0, 0, 0, 0, 0,
+             0, 0, 0, scalingVectorCamera[3], 0, 0, 0, 0, 0,
+             0, 0, 0, 0, scalingVectorCamera[4], 0, 0, 0, 0,
+             0, 0, 0, 0, 0, scalingVectorCamera[5], 0, 0, 0,
+             0, 0, 0, 0, 0, 0, scalingVectorCamera[6], 0, 0,
+             0, 0, 0, 0, 0, 0, 0, scalingVectorCamera[7], 0,
+             0, 0, 0, 0, 0, 0, 0, 0, scalingVectorCamera[8];
+
+    scalingMatrixCamera = last_translated_confidence * scalingMatrixCamera;
 
     Eigen::VectorXf scalingVectorImu = Eigen::VectorXf::Ones(9);
     scalingVectorImu[0] = exp(fabs(tf_angular_velocity_imu_rotated.getX()));
@@ -418,19 +441,72 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     scalingVectorImu[7] = exp(fabs(tf_angular_velocity_imu_rotated.getY()));
     scalingVectorImu[8] = exp(fabs(tf_angular_velocity_imu_rotated.getZ()));
 
-    scalingVectorCamera = last_translated_confidence * scalingVectorCamera;
+    Eigen::MatrixXf scalingMatrixImu (9, 9);
+    scalingMatrixImu << scalingVectorImu[0], 0, 0, 0, 0, 0, 0, 0, 0,
+             0, scalingVectorImu[1], 0, 0, 0, 0, 0, 0, 0,
+             0, 0, scalingVectorImu[2], 0, 0, 0, 0, 0, 0,
+             0, 0, 0, scalingVectorImu[3], 0, 0, 0, 0, 0,
+             0, 0, 0, 0, scalingVectorImu[4], 0, 0, 0, 0,
+             0, 0, 0, 0, 0, scalingVectorImu[5], 0, 0, 0,
+             0, 0, 0, 0, 0, 0, scalingVectorImu[6], 0, 0,
+             0, 0, 0, 0, 0, 0, 0, scalingVectorImu[7], 0,
+             0, 0, 0, 0, 0, 0, 0, 0, scalingVectorImu[8];
 
-    Eigen::MatrixXf R_cam_scaled = R_cam * scalingFactorCamera;
-    Eigen::MatrixXf R_imu_scaled = R_imu * scalingFactorImu;
+    */
+
+
+    // Component-wise (log - fct) 
+    Eigen::VectorXf scalingVectorCamera = Eigen::VectorXf::Ones(9);
+    scalingVectorCamera[0] = log(fabs(tf_angular_velocity_cam_rotated.getX()) + 1);
+    scalingVectorCamera[1] = log(fabs(tf_angular_velocity_cam_rotated.getY()) + 1);
+    scalingVectorCamera[2] = log(fabs(tf_angular_velocity_cam_rotated.getZ()) + 1);
+    scalingVectorCamera[6] = log(fabs(tf_angular_velocity_cam_rotated.getX()) + 1);
+    scalingVectorCamera[7] = log(fabs(tf_angular_velocity_cam_rotated.getY()) + 1);
+    scalingVectorCamera[8] = log(fabs(tf_angular_velocity_cam_rotated.getZ()) + 1);
+
+    Eigen::MatrixXf scalingMatrixCamera (9, 9);
+    scalingMatrixCamera << scalingVectorCamera[0], 0, 0, 0, 0, 0, 0, 0, 0,
+             0, scalingVectorCamera[1], 0, 0, 0, 0, 0, 0, 0,
+             0, 0, scalingVectorCamera[2], 0, 0, 0, 0, 0, 0,
+             0, 0, 0, scalingVectorCamera[3], 0, 0, 0, 0, 0,
+             0, 0, 0, 0, scalingVectorCamera[4], 0, 0, 0, 0,
+             0, 0, 0, 0, 0, scalingVectorCamera[5], 0, 0, 0,
+             0, 0, 0, 0, 0, 0, scalingVectorCamera[6], 0, 0,
+             0, 0, 0, 0, 0, 0, 0, scalingVectorCamera[7], 0,
+             0, 0, 0, 0, 0, 0, 0, 0, scalingVectorCamera[8];
+
+
+    Eigen::VectorXf scalingVectorImu = Eigen::VectorXf::Ones(9);
+    scalingVectorImu[0] = log(fabs(tf_angular_velocity_imu_rotated.getX()) + 1);
+    scalingVectorImu[1] = log(fabs(tf_angular_velocity_imu_rotated.getY()) + 1);
+    scalingVectorImu[2] = log(fabs(tf_angular_velocity_imu_rotated.getZ()) + 1);
+    scalingVectorImu[6] = log(fabs(tf_angular_velocity_imu_rotated.getX()) + 1);
+    scalingVectorImu[7] = log(fabs(tf_angular_velocity_imu_rotated.getY()) + 1);
+    scalingVectorImu[8] = log(fabs(tf_angular_velocity_imu_rotated.getZ()) + 1);
+
+    Eigen::MatrixXf scalingMatrixImu (9, 9);
+    scalingMatrixImu << scalingVectorImu[0], 0, 0, 0, 0, 0, 0, 0, 0,
+             0, scalingVectorImu[1], 0, 0, 0, 0, 0, 0, 0,
+             0, 0, scalingVectorImu[2], 0, 0, 0, 0, 0, 0,
+             0, 0, 0, scalingVectorImu[3], 0, 0, 0, 0, 0,
+             0, 0, 0, 0, scalingVectorImu[4], 0, 0, 0, 0,
+             0, 0, 0, 0, 0, scalingVectorImu[5], 0, 0, 0,
+             0, 0, 0, 0, 0, 0, scalingVectorImu[6], 0, 0,
+             0, 0, 0, 0, 0, 0, 0, scalingVectorImu[7], 0,
+             0, 0, 0, 0, 0, 0, 0, 0, scalingVectorImu[8];
+
+    Eigen::MatrixXf R_cam_scaled = R_cam;// * scalingMatrixCamera;
+    Eigen::MatrixXf R_imu_scaled = R_imu;// * scalingMatrixImu;
 
     Eigen::MatrixXf Q_scaled = Q_init;//* (1 / ((scalingFactorCamera + scalingFactorImu) / 2.0)); //multiply Q with inverse of avg scaling factor of R matrices
     
 
     // Prediction step
-    predict_state(dT, eigen_angular_velocity_rotated_9dof, Q_scaled);
+    predict_state(dT, systemInput, Q_scaled);
 
     // Update step
-    Eigen::VectorXf measurement(9);
+    Eigen::VectorXf measurementCam(9);
+    Eigen::VectorXf measurementImu(9);
 
     if (fabs(last_pose_interpolated.getRotation().length() - 1.0) > small_number) {
         ROS_WARN("Uninitialized quaternion, length: %f", last_pose_interpolated.getRotation().length());
@@ -443,31 +519,26 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     geometry_msgs::Pose cam_diff_geom_msgs;
     tf::poseTFToMsg(cam_diff_interpolated, cam_diff_geom_msgs);
 
-    measurement << imu_diff.getOrigin().getX(), imu_diff.getOrigin().getY(), imu_diff.getOrigin().getZ(),
-        getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation),
-        tf_angular_velocity_imu_rotated.getX(), tf_angular_velocity_imu_rotated.getY(), tf_angular_velocity_imu_rotated.getZ();
-
-    update_state(measurement, R_imu_scaled, tf_angular_velocity_imu_rotated);
-
-    measurement << cam_diff_interpolated.getOrigin().getX(), cam_diff_interpolated.getOrigin().getY(), cam_diff_interpolated.getOrigin().getZ(),
+    measurementCam << cam_diff_interpolated.getOrigin().getX(), cam_diff_interpolated.getOrigin().getY(), cam_diff_interpolated.getOrigin().getZ(),
         getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation),
         tf_angular_velocity_cam_rotated.getX(), tf_angular_velocity_cam_rotated.getY(), tf_angular_velocity_cam_rotated.getZ();
 
-    update_state(measurement, R_cam_scaled, tf_angular_velocity_cam_rotated);
+    update_state(measurementCam, R_cam_scaled, tf_angular_velocity_cam_rotated);
 
-    tf::Pose filteredDeltaPose;
-    filteredDeltaPose.setOrigin(tf::Vector3(state[0], state[1], state[2]));
-    filteredDeltaPose.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));
+    measurementImu << imu_diff.getOrigin().getX(), imu_diff.getOrigin().getY(), imu_diff.getOrigin().getZ(),
+        getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation),
+        tf_angular_velocity_imu_rotated.getX(), tf_angular_velocity_imu_rotated.getY(), tf_angular_velocity_imu_rotated.getZ();
 
-    tf::Stamped<tf::Pose> filteredPose;
+    update_state(measurementImu, R_imu_scaled, tf_angular_velocity_imu_rotated);
+
+    // pose with delta values
+    filteredDeltaPose.setOrigin(current_tf.inverse() * tf::Vector3(state[0], state[1], state[2]));  //translation delta applied locally -> transform to global frame
+    filteredDeltaPose.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));       //rotation delta applied globally -> no transform
+
+    // pose with non-delta values -> published
     tf::poseStampedMsgToTF(filtered_pose_msg, filteredPose);      // put last published msg into filteredPose
     filteredPose.mult(filteredPose, filteredDeltaPose.inverse()); // update der filtered pose
     tf::poseStampedTFToMsg(filteredPose, filtered_pose_msg);      // update filtered_Pose_msg
-    
-    // double tmp_y, tmp_p, tmp_r;
-    // tf::Matrix3x3(filteredDeltaPose.inverse().getRotation()).getRPY(tmp_r, tmp_p, tmp_y);
-    // printf("Diff: %f %f %f\n", tmp_r, tmp_p, tmp_y);
-    // printf("Angular vel: %f %f %f\n", state[6], state[7], state[8]);
 
     // Construct msg
     filtered_pose_msg.header.frame_id = "odom";
@@ -723,18 +794,6 @@ int main(int argc, char **argv)
              0, 0, 0, 0, 0, 0, cam_variances[6], 0, 0,
              0, 0, 0, 0, 0, 0, 0, cam_variances[7], 0,
              0, 0, 0, 0, 0, 0, 0, 0, cam_variances[8];
-
-    /*Q <<     0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 1, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 1, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 1;
-
-    Q = Q * R_imu;*/
 
     while (ros::ok())
     {
