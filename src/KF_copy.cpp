@@ -215,8 +215,6 @@ const float MAX_SCALING_FACTOR = 1000.0;
 
 // LKF state
 Eigen::VectorXf state = Eigen::VectorXf::Zero(9); //(x, y, z, roll, pitch, yaw, w_x, w_y, w_z) -> initial 0
-Eigen::VectorXf statePredicted = Eigen::VectorXf::Zero(9); //(x, y, z, roll, pitch, yaw, w_x, w_y, w_z) -> initial 0
-Eigen::VectorXf stateUpdated = Eigen::VectorXf::Zero(9); //(x, y, z, roll, pitch, yaw, w_x, w_y, w_z) -> initial 0
 
 // State propagation matrix F
 Eigen::MatrixXf F(9, 9);
@@ -272,18 +270,15 @@ void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
         0, 0, 0, 0, 0, 0, 0, 0, 1;
 
     // predict state
-    //COMMENT IN NEXT LINE IF USING PREDICTION STEP ONLY
-    //statePredicted = F * state + G * u;
-    statePredicted = F * stateUpdated + G * u;   // 9x9 * 9x1 = 9x1   //here: x_pri
-    state = statePredicted;
+    state = F * state + G * u;   // 9x9 * 9x1 = 9x1   //here: x_pri
     P = F * P * F.transpose() + Q; // here: calculate P_pri   // 9x9 * 9x9 * 9x9 + 9x9 = 9x9
 
     // predict measurement
-    z = H * statePredicted; 
+    z = H * state; 
 }
 
 // Update Step -> measurement comes from either imu or cam callback
-void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const Eigen::VectorXf &predictedStateTransformed)
+void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R)
 {
     // innovation covariance
     Eigen::MatrixXf S = H * P * H.transpose() + R; // all 9x9
@@ -294,8 +289,7 @@ void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const E
     // update state estimation -> correction of state
     // calculate innovation
     Eigen::VectorXf innovation = measurement - z;      // 9x1 - 9x1 = 9x1
-    stateUpdated = predictedStateTransformed + (K * innovation);                  // calculate x_pos    // 9x1 + (9x9 * 9x1) = 9x1 + 9x1 = 9x1
-    state = stateUpdated;
+    state = state + (K * innovation);                  // calculate x_pos    // 9x1 + (9x9 * 9x1) = 9x1 + 9x1 = 9x1
     P = (Eigen::MatrixXf::Identity(9, 9) - K * H) * P; // (9x9 - (9x9 * 9x9)) * 9x9 = 9x9
 
 }
@@ -314,8 +308,6 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     // pose that stores delta values of kf output
     tf::Pose filteredDeltaPose;
-    tf::Stamped<tf::Pose> filteredDeltaPoseUpdate;
-    tf::Stamped<tf::Pose> filteredDeltaPosePrediction;
     tf::Stamped<tf::Pose> filteredPose;
     tf::poseStampedMsgToTF(filtered_pose_msg, filteredPose);     
     tf::Quaternion current_rotation = filteredPose.getRotation();
@@ -391,11 +383,13 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     // Calculate delta of imu pose
     tf::Pose imu_diff = pose_diff(m, last_imu_pose);
+    //imu_diff.setOrigin(current_tf * imu_diff.getOrigin());
     geometry_msgs::Pose imu_diff_geom_msgs;
     tf::poseTFToMsg(imu_diff, imu_diff_geom_msgs);
         
     // Calculate delta of cam pose
     tf::Pose cam_diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
+    //cam_diff_interpolated.setOrigin(current_tf * cam_diff_interpolated.getOrigin());
     geometry_msgs::Pose cam_diff_geom_msgs;
     tf::poseTFToMsg(cam_diff_interpolated, cam_diff_geom_msgs);
 
@@ -407,7 +401,6 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     systemInput[6] = eigen_angular_velocity_imu_rotated[0];
     systemInput[7] = eigen_angular_velocity_imu_rotated[1];
     systemInput[8] = eigen_angular_velocity_imu_rotated[2];
-
 
     // Calculate Scaling factor for covariance matrices by using angular velocities and confidence of T265
     // Scalar - wise
@@ -513,24 +506,6 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // Prediction step
     predict_state(dT, systemInput, Q_scaled);
 
-    filteredDeltaPosePrediction.setOrigin(current_tf.inverse() * tf::Vector3(state[0], state[1], state[2]));    //delta translation applied locally -> multiply with current_tf.inverse()
-    filteredDeltaPosePrediction.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));       //rotation delta applied globally -> no transform
-    std::cout << state << std::endl;
-
-    geometry_msgs::PoseStamped filteredDeltaPosePrediction_msg;
-    tf::poseStampedTFToMsg(filteredDeltaPosePrediction, filteredDeltaPosePrediction_msg);
-    Eigen::VectorXf predictedStateVector (9);   //state, set by prediction step and transformed to global frame
-    predictedStateVector[0] = filteredDeltaPosePrediction.getOrigin().getX();
-    predictedStateVector[1] = filteredDeltaPosePrediction.getOrigin().getY();
-    predictedStateVector[2] = filteredDeltaPosePrediction.getOrigin().getZ();
-    predictedStateVector[3] = getRollFromQuaternion(filteredDeltaPosePrediction_msg.pose.orientation);
-    predictedStateVector[4] = getPitchFromQuaternion(filteredDeltaPosePrediction_msg.pose.orientation);
-    predictedStateVector[5] = getYawFromQuaternion(filteredDeltaPosePrediction_msg.pose.orientation);
-    predictedStateVector[6] = systemInput[6];
-    predictedStateVector[7] = systemInput[7];
-    predictedStateVector[8] = systemInput[8];
-
-
     // Update step
     Eigen::VectorXf measurementCam(9);
     Eigen::VectorXf measurementImu(9);
@@ -545,23 +520,21 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
         getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation),
         tf_angular_velocity_cam_rotated.getX(), tf_angular_velocity_cam_rotated.getY(), tf_angular_velocity_cam_rotated.getZ();
 
-    update_state(measurementCam, R_cam_scaled, predictedStateVector);   //updates state vector by setting it to stateUpdated at the end
-
+    update_state(measurementCam, R_cam_scaled);
 
     measurementImu << imu_diff.getOrigin().getX(), imu_diff.getOrigin().getY(), imu_diff.getOrigin().getZ(),
         getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation),
         tf_angular_velocity_imu_rotated.getX(), tf_angular_velocity_imu_rotated.getY(), tf_angular_velocity_imu_rotated.getZ();
 
-    update_state(measurementImu, R_imu_scaled, state);  //second update based on first update result
+    update_state(measurementImu, R_imu_scaled);
 
-    //pose with delta values (not * current_tf.inverse() because it is already in correct frame)
-    filteredDeltaPoseUpdate.setOrigin(tf::Vector3(state[0], state[1], state[2]));
-    filteredDeltaPoseUpdate.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));  
+    // pose with delta values
+    filteredDeltaPose.setOrigin(current_tf.inverse() * tf::Vector3(state[0], state[1], state[2]));  //translation delta applied locally -> transform to global frame        //only prediction * inverse, not update too
+    filteredDeltaPose.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));       //rotation delta applied globally -> no transform
 
-     // pose with non-delta values -> published
+    // pose with non-delta values -> published
     tf::poseStampedMsgToTF(filtered_pose_msg, filteredPose);      // put last published msg into filteredPose
-    //  SET TO FILTEREDPOSEPREDICTION WHEN ONLY USING PREDICT STEP ->
-    filteredPose.mult(filteredPose, filteredDeltaPoseUpdate.inverse()); // update of filtered pose
+    filteredPose.mult(filteredPose, filteredDeltaPose.inverse()); // update of filtered pose
     tf::poseStampedTFToMsg(filteredPose, filtered_pose_msg);      // update filtered_Pose_msg
 
     // Construct msg
@@ -627,8 +600,7 @@ void camMsgCallback(const realsense_pipeline_fix::CameraPoseAngularVelocityConst
     if (interpolate == CAM)
     {
         pushToAccumulator(m);
-        //std::cout << "cam_msg_confidence: " << m->tracker_confidence << std::endl;
-        //ROS_INFO("confidence %d", m->tracker_confidence);
+
         // Otherwise, if IMU interpolation is active, wait for the IMU poses in the queue
     }
     else if (interpolate == IMU)
@@ -828,4 +800,3 @@ int main(int argc, char **argv)
 
     return 0;
 }
-
