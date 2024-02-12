@@ -246,13 +246,15 @@ Eigen::MatrixXf Q_init = 0.1 * Eigen::MatrixXf::Identity(9, 9); // process noise
 Eigen::MatrixXf R_imu(9, 9);
 Eigen::MatrixXf R_cam(9, 9); // evtl z achse manuell hohe varianz geben
 
+bool firstIteration = true;
+
 
 // Prediction Step
 void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
 {
 
-    F <<0, 0, 0, 0, 0, 0, 0, (dT * r_sphere), 0,
-        0, 0, 0, 0, 0, 0, -(dT * r_sphere), 0, 0,
+    F <<0, 0, 0, 0, 0, 0, 0, -(dT * r_sphere), 0,
+        0, 0, 0, 0, 0, 0, (dT * r_sphere), 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -273,8 +275,8 @@ void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
 
     // predict state
     //COMMENT IN NEXT LINE IF USING PREDICTION STEP ONLY
-    //statePredicted = F * state + G * u;
-    statePredicted = F * stateUpdated + G * u;   // 9x9 * 9x1 = 9x1   //here: x_pri
+    statePredicted = F * state + G * u;
+    //statePredicted = F * stateUpdated + G * u;   // 9x9 * 9x1 = 9x1   //here: x_pri
     state = statePredicted;
     P = F * P * F.transpose() + Q; // here: calculate P_pri   // 9x9 * 9x9 * 9x9 + 9x9 = 9x9
 
@@ -300,8 +302,7 @@ void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const E
 
 }
 
-void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
-{
+void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m){
 
     // calculate dT
     double dT = (m->header.stamp - last_imu_pose.header.stamp).toSec();
@@ -326,20 +327,32 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     tf::Quaternion q1, q2, q_res;
     tf::quaternionMsgToTF(accumulator.front().pose.pose.orientation, q1);
     tf::quaternionMsgToTF(accumulator.back().pose.pose.orientation, q2);
+
     // Convert geometry_msgs Points to tf Vectors
     tf::Vector3 v1, v2, v_res;
     tf::pointMsgToTF(accumulator.front().pose.pose.position, v1);
     tf::pointMsgToTF(accumulator.back().pose.pose.position, v2);
+
     // Get time parameter for slerp
     double t_acc_last = accumulator.front().header.stamp.toSec();
     double t_acc_latest = accumulator.back().header.stamp.toSec();
     double t = (t_current - t_acc_last) / (t_acc_latest - t_acc_last);
+
     // Interpolate rotation
     q_res = tf::slerp(q1, q2, t);
     // Interpolate position
     v_res = tf::lerp(v1, v2, t);
     // Construct interpolated result
     pose_interpolated = tf::Pose(q_res, v_res);
+
+    if(firstIteration){
+        pose_interpolated.setRotation(tf::createQuaternionFromRPY(0,0,0));
+        //  ROS_INFO("%f",pose_interpolated.getRotation().length());
+        last_pose_interpolated.setOrigin(tf::Vector3(0,0,0));
+        last_pose_interpolated.setRotation(tf::createQuaternionFromRPY(0,0,0));
+        firstIteration = false;
+    }
+
     // Rotate interpolated pose via basis change
     pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
     pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
@@ -357,13 +370,24 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     w2.setY(accumulator.back().imu.angular_velocity.y);
     w2.setZ(accumulator.back().imu.angular_velocity.z);
     w_res = tf::lerp(w1, w2, t);
+
+    //temp!!!
+    w_res.setX(-w_res.getX());        // set according to github frames
+    //w_res.setY(-w_res.getY());        // set to get same result for input
+    w_res.setZ(-w_res.getZ());
+
     // Rotate interpolated angular velocity via basis change
     tf::Pose angularVelPose;  // use tf::Pose to save angular velocity in x,y,z elements for multiplication operation
     angularVelPose.setOrigin(w_res);
     angularVelPose.setRotation(rot_zero);
+
     angularVelPose.mult(angularVelPose, tf_axes_imu2cam);
+
+    // angularVelPose = current_tf * angularVelPose;
+
     angularVelPose.mult(tf_map_imu2cam, angularVelPose);
-    // convert temporary pose back to sensor_msgs::Imu
+
+    // convert temporary tf::Pose back to sensor_msgs::Imu
     sensor_msgs::Imu cam_angular_vel_interpolated;
     cam_angular_vel_interpolated.angular_velocity.x = angularVelPose.getOrigin().getX();
     cam_angular_vel_interpolated.angular_velocity.y = angularVelPose.getOrigin().getY();
@@ -378,6 +402,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // Rotate angular velocities -> local to global frame
     tf::Vector3 tf_angular_velocity_imu_rotated = current_tf * tf_angular_velocity_imu;
     tf::Vector3 tf_angular_velocity_cam_rotated = current_tf * tf_angular_velocity_cam;
+
 
     Eigen::Vector3f eigen_angular_velocity_imu_rotated;
     eigen_angular_velocity_imu_rotated[0] = tf_angular_velocity_imu_rotated.getX();
@@ -401,12 +426,34 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     // 9dof u vector for predict step
     Eigen::VectorXf systemInput = Eigen::VectorXf::Zero(9);
-    systemInput[3] = getRollFromQuaternion(imu_diff_geom_msgs.orientation);
-    systemInput[4] = getPitchFromQuaternion(imu_diff_geom_msgs.orientation);
-    systemInput[5] = getYawFromQuaternion(imu_diff_geom_msgs.orientation);
-    systemInput[6] = eigen_angular_velocity_imu_rotated[0];
-    systemInput[7] = eigen_angular_velocity_imu_rotated[1];
-    systemInput[8] = eigen_angular_velocity_imu_rotated[2];
+    // systemInput[3] = getRollFromQuaternion(imu_diff_geom_msgs.orientation);
+    // systemInput[4] = getPitchFromQuaternion(imu_diff_geom_msgs.orientation);
+    // systemInput[5] = getYawFromQuaternion(imu_diff_geom_msgs.orientation);
+    // systemInput[6] = eigen_angular_velocity_imu_rotated[0];
+    // systemInput[7] = eigen_angular_velocity_imu_rotated[1];
+    // systemInput[8] = eigen_angular_velocity_imu_rotated[2];
+    systemInput[3] = getRollFromQuaternion(cam_diff_geom_msgs.orientation);
+    systemInput[4] = getPitchFromQuaternion(cam_diff_geom_msgs.orientation);
+    systemInput[5] = getYawFromQuaternion(cam_diff_geom_msgs.orientation);
+    systemInput[6] = eigen_angular_velocity_cam_rotated[0];
+    systemInput[7] = eigen_angular_velocity_cam_rotated[1];
+    systemInput[8] = eigen_angular_velocity_cam_rotated[2];
+
+
+    geometry_msgs::Pose tempPose1;
+    tf::poseTFToMsg(pose_interpolated, tempPose1);
+
+    geometry_msgs::PoseStamped tempPose2;
+    tempPose2=*m;
+
+    // ROS_INFO("pose_interpolated:\nroll:\t%f\npitch:\t%f\nyaw:\t%f\n", getRollFromQuaternion(tempPose1.orientation), getPitchFromQuaternion(tempPose1.orientation), getYawFromQuaternion(tempPose1.orientation));
+    // ROS_INFO("imu:\nroll:\t%f\npitch:\t%f\nyaw:\t%f\n", getRollFromQuaternion(tempPose2.pose.orientation), getPitchFromQuaternion(tempPose2.pose.orientation), getYawFromQuaternion(tempPose2.pose.orientation));
+
+    // ROS_INFO("cam:\ndRoll:\t%f\ndPitch:\t%f\ndYaw:\t%f\n", getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation));
+    // ROS_INFO("imu:\ndRoll:\t%f\ndPitch:\t%f\ndYaw:\t%f\n", getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation));
+
+    // ROS_INFO("cam:\ndW_x:\t%f\ndW_y:\t%f\ndW_z:\t%f\n", eigen_angular_velocity_cam_rotated[0], eigen_angular_velocity_cam_rotated[1], eigen_angular_velocity_cam_rotated[2]);
+    // ROS_INFO("imu:\ndW_x:\t%f\ndW_y:\t%f\ndW_z:\t%f\n", eigen_angular_velocity_imu_rotated[0], eigen_angular_velocity_imu_rotated[1], eigen_angular_velocity_imu_rotated[2]);
 
 
     // Calculate Scaling factor for covariance matrices by using angular velocities and confidence of T265
@@ -515,7 +562,6 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     filteredDeltaPosePrediction.setOrigin(current_tf.inverse() * tf::Vector3(state[0], state[1], state[2]));    //delta translation applied locally -> multiply with current_tf.inverse()
     filteredDeltaPosePrediction.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));       //rotation delta applied globally -> no transform
-    std::cout << state << std::endl;
 
     geometry_msgs::PoseStamped filteredDeltaPosePrediction_msg;
     tf::poseStampedTFToMsg(filteredDeltaPosePrediction, filteredDeltaPosePrediction_msg);
@@ -545,14 +591,14 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
         getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation),
         tf_angular_velocity_cam_rotated.getX(), tf_angular_velocity_cam_rotated.getY(), tf_angular_velocity_cam_rotated.getZ();
 
-    update_state(measurementCam, R_cam_scaled, predictedStateVector);   //updates state vector by setting it to stateUpdated at the end
+    //update_state(measurementCam, R_cam_scaled, predictedStateVector);   //updates state vector by setting it to stateUpdated at the end
 
 
     measurementImu << imu_diff.getOrigin().getX(), imu_diff.getOrigin().getY(), imu_diff.getOrigin().getZ(),
         getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation),
         tf_angular_velocity_imu_rotated.getX(), tf_angular_velocity_imu_rotated.getY(), tf_angular_velocity_imu_rotated.getZ();
 
-    update_state(measurementImu, R_imu_scaled, state);  //second update based on first update result
+    //update_state(measurementImu, R_imu_scaled, state);  //second update based on first update result
 
     //pose with delta values (not * current_tf.inverse() because it is already in correct frame)
     filteredDeltaPoseUpdate.setOrigin(tf::Vector3(state[0], state[1], state[2]));
@@ -560,8 +606,8 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
      // pose with non-delta values -> published
     tf::poseStampedMsgToTF(filtered_pose_msg, filteredPose);      // put last published msg into filteredPose
-    //  SET TO FILTEREDPOSEPREDICTION WHEN ONLY USING PREDICT STEP ->
-    filteredPose.mult(filteredPose, filteredDeltaPoseUpdate.inverse()); // update of filtered pose
+    //  SET TO filteredDeltaPosePrediction.inverse() WHEN ONLY USING PREDICT STEP ->
+    filteredPose.mult(filteredPose, filteredDeltaPosePrediction.inverse()); // update of filtered pose
     tf::poseStampedTFToMsg(filteredPose, filtered_pose_msg);      // update filtered_Pose_msg
 
     // Construct msg
@@ -773,7 +819,7 @@ int main(int argc, char **argv)
     // norm vector
     eigen_norm_vector[0] = 0.0;
     eigen_norm_vector[1] = 0.0;
-    eigen_norm_vector[2] = 1.0;
+    eigen_norm_vector[2] = -1.0;
 
     // IMU:
     Eigen::VectorXf imu_variances = Eigen::VectorXf::Zero(9); //[x,y,z,r,p,y, angular_vel_x, angular_vel_y, angular_vel_z]^T
@@ -828,4 +874,3 @@ int main(int argc, char **argv)
 
     return 0;
 }
-

@@ -249,8 +249,8 @@ Eigen::MatrixXf R_cam(9, 9); // evtl z achse manuell hohe varianz geben
 void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
 {
 
-    F <<0, 0, 0, 0, 0, 0, 0, (dT * r_sphere), 0,
-        0, 0, 0, 0, 0, 0, -(dT * r_sphere), 0, 0,
+    F <<0, 0, 0, 0, 0, 0, 0, -(dT * r_sphere), 0,
+        0, 0, 0, 0, 0, 0, (dT * r_sphere), 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
