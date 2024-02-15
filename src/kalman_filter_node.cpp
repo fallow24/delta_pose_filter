@@ -13,39 +13,16 @@
 #include <Eigen/Dense>
 #include "../../../devel/include/realsense_pipeline_fix/CameraPoseAngularVelocity.h"
 
-/*
-        - No use_sim_time and no --clock to get LKF output from robotik halle bagfiles
-        - angular vel component wise
-        - also scale Q to keep ( ||Q|| / ||R|| ) ratio
-        - scaling limitations for euler factor to avoid instability
+/** ---------------------------------------
+ * ------------Rosparam server defines -----
+ * ----------------------------------------*/
 
-        - R only scaling:
-            - camera confidence with 1,10,100,1000 doesnt do much difference for scaling
-            - taking e^||ang_vel|| makes things worse (for imu and cam) -> more pitch errors and random loops in circle path (corresponding to wave like behaviour in plot?)
-            - exp componentwise about same result
-            - ln instead of exp also makes it worse than static R but better than exp, due to smaller scaling factors (?)
-            - component wise ln even worse
-            - 10 ^ (log(|ang_vel) + 1) is worst
-        - R & Q scaling:
-            - Q / avg(R_scalingFactor) makes things even worse
-        
-
-        - use different bag file
-        - maybe linear or log fct to take slow speed into account, so that slow speed weighs sensors more. exp can only make R worse but not better
-
-        - rotation matrix nicht aus state wegen delta sondern filteredDeltaPose
-        - orientation in u vector   
-
-        - punktwolken zeigen
-
-*/
-
-// Rosparam parameters
 const char *topic_publish_default = "/lkf2/pose";
 const char *topic_pose_imu_default = "/posePub_merged";
 const char *topic_pose_cam_default = "/camera/pose";
+const char *topic_pose_camImu_default = "/camera/poseAndImu";
 
-const char *frame_id_imu_default = "imu_frame"; // SHOULD BE IMU!!!
+const char *frame_id_imu_default = "imu_frame";
 const char *frame_id_cam_default = "camera_frame";
 
 int imu_rate, cam_rate;   // In Hz
@@ -53,6 +30,10 @@ int fast_rate, slow_rate; // Redefinition, same as above
 int n_acc;                // Accumulation window of slower pose stream
 
 double r_sphere; // Radius of sphere in m
+
+/** ---------------------------------------
+ * ------------Internal variables----------
+ * ----------------------------------------*/
 
 // Which pose stream to use for interpolation (the faster one)
 enum INTERPOLATE_STREAM
@@ -78,6 +59,7 @@ ros::CallbackQueue callbacks_fast;
 
 // Transformation between IMU and Camera pose frame (FROM Imu TO Cam)
 tf::StampedTransform tf_map_imu2cam, tf_axes_imu2cam;
+
 ros::Publisher filtered_pose_pub;
 
 // Store current angular velocity provided by imus
@@ -90,6 +72,9 @@ realsense_pipeline_fix::CameraPoseAngularVelocity camera_pose_imu;
 // norm vector for rotation of angular velocity
 Eigen::Vector3f eigen_norm_vector;
 tf::Vector3 tf_norm_vector;
+
+// Store sum of filtered delta values for rpy
+Eigen::VectorXf filtered_rpy_sum = Eigen::VectorXf::Zero(3);
 
 // Save last interpolated confidence level of camera
 float last_translated_confidence;
@@ -106,6 +91,14 @@ const double small_number = 0.00001;
 
 uint32_t sequence = 0; // Sequence number for publish msg
 
+const float MIN_SCALING_FACTOR = 0.01;
+const float MAX_SCALING_FACTOR = 1000.0;
+
+/** ---------------------------------------
+ * ------------Supporting methods----------
+ * ----------------------------------------*/
+
+// Advances the internal queue such that the timestamp argument is between front and end
 inline void waitForAccumulator(double t)
 {
 
@@ -113,9 +106,9 @@ inline void waitForAccumulator(double t)
     while (accumulator.size() < 1 && ros::ok())
     {
         callbacks_fast.callOne(ros::WallDuration()); // callbacks_fast momentan für cam --- zeitstempel von imu und posePubMerged gleich -> nicht für imu interpolieren
-        
     }
 
+    // Check if lagging behind
     if (t < accumulator.front().header.stamp.toSec())
         return;
 
@@ -127,10 +120,10 @@ inline void waitForAccumulator(double t)
             ros::spinOnce();
         else
             callbacks_fast.callOne(ros::WallDuration());
-        
     }
 }
 
+// Push a message to the internal queue, removes the oldest entry if full. 
 inline void pushToAccumulator(const realsense_pipeline_fix::CameraPoseAngularVelocityConstPtr &m)
 {
     accumulator.push(*m);
@@ -138,6 +131,7 @@ inline void pushToAccumulator(const realsense_pipeline_fix::CameraPoseAngularVel
         accumulator.pop();
 }
 
+// Helper to calculate the diff transform between two poses
 inline tf::Transform pose_diff(const geometry_msgs::PoseStamped::ConstPtr &m, geometry_msgs::PoseStamped &last_pose_msg)
 {
     tf::Stamped<tf::Pose> current_pose, last_pose;
@@ -146,22 +140,6 @@ inline tf::Transform pose_diff(const geometry_msgs::PoseStamped::ConstPtr &m, ge
     return current_pose.inverseTimes(last_pose);
 }
 
-inline double max(double a, double b, double c)
-{
-    return std::max(std::max(a, b), c);
-}
-
-inline double min(double a, double b, double c)
-{
-    return std::min(std::min(a, b), c);
-}
-
-inline double mid(double a, double b, double c)
-{
-    return std::min(std::max(a, b), std::max(b, c));
-}
-
-//------------supporting methods----------
 inline double getRollFromQuaternion(const geometry_msgs::Quaternion &q)
 {
     tf::Quaternion q2;
@@ -189,13 +167,14 @@ inline double getYawFromQuaternion(const geometry_msgs::Quaternion &q)
     return y;
 }
 
-inline float confidenceTranslator(const uint8_t &confidence){
+inline uint32_t confidenceTranslator(const uint8_t &confidence){
     // Confidence level (0 = Failed, 1 = Low, 2 = Medium, 3 = High confidence) will be translated to a factor, which the pose variance will be multiplied with
     // low confidence -> higher variance -> less influence in KF
 
     // == switch case underneath
     return pow(10, 3 - confidence);
-    /*switch (confidence)
+    /*
+    switch (confidence)
     {
     case 0:
         return 1000.0;
@@ -208,15 +187,117 @@ inline float confidenceTranslator(const uint8_t &confidence){
     }*/
 }
 
-const float MIN_SCALING_FACTOR = 0.01;
-const float MAX_SCALING_FACTOR = 1000.0;
+inline float getScalingFactorExp(const tf::Vector3 &angular_vel, bool isCam){
 
-//--------------LKF----------------
+    float scalingFactor = 1.0;
+    if(isCam){
+        scalingFactor = last_translated_confidence * exp(angular_vel.length());
+    }
+    else scalingFactor = exp(angular_vel.length());
+
+    // Clamp to be between MIN and MAX value
+    scalingFactor = std::min(std::max(scalingFactor, MIN_SCALING_FACTOR), MAX_SCALING_FACTOR);
+    return scalingFactor;
+};
+
+inline Eigen::MatrixXf getScalingMatrixExp(const tf::Vector3 &angular_vel, bool isCam){    
+    
+    Eigen::VectorXf scalingVector = Eigen::VectorXf::Ones(9);
+    Eigen::MatrixXf scalingMatrix (9, 9);
+
+    scalingVector[0] = exp(fabs(angular_vel.getX()));
+    scalingVector[1] = exp(fabs(angular_vel.getY()));
+    scalingVector[2] = exp(fabs(angular_vel.getZ()));
+    // scalingVector[3] = exp(fabs(angular_vel.getX()));  //TODO: check if x -> roll, y -> pitch ...
+    // scalingVector[4] = exp(fabs(angular_vel.getY()));
+    // scalingVector[5] = exp(fabs(angular_vel.getZ()));
+    scalingVector[6] = exp(fabs(angular_vel.getX()));
+    scalingVector[7] = exp(fabs(angular_vel.getY()));
+    scalingVector[8] = exp(fabs(angular_vel.getZ()));
+
+    if(isCam){
+        scalingVector *= last_translated_confidence;
+    }
+
+    // Clamp to be between MIN and MAX value
+    for(int i = 0; i < scalingVector.size(); i++){
+        scalingVector[i] = std::min(std::max(scalingVector[i], MIN_SCALING_FACTOR), MAX_SCALING_FACTOR);
+    }
+
+    scalingMatrix << 
+            scalingVector[0], 0, 0, 0, 0, 0, 0, 0, 0,
+             0, scalingVector[1], 0, 0, 0, 0, 0, 0, 0,
+             0, 0, scalingVector[2], 0, 0, 0, 0, 0, 0,
+             0, 0, 0, scalingVector[3], 0, 0, 0, 0, 0,
+             0, 0, 0, 0, scalingVector[4], 0, 0, 0, 0,
+             0, 0, 0, 0, 0, scalingVector[5], 0, 0, 0,
+             0, 0, 0, 0, 0, 0, scalingVector[6], 0, 0,
+             0, 0, 0, 0, 0, 0, 0, scalingVector[7], 0,
+             0, 0, 0, 0, 0, 0, 0, 0, scalingVector[8];
+        
+    return scalingMatrix;
+
+};
+
+inline float getScalingFactorLog(const tf::Vector3 &angular_vel, bool isCam){
+
+    float scalingFactor = 1.0;
+    if(isCam){
+        scalingFactor = last_translated_confidence * (log(angular_vel.length() + 1) + 1);
+    }
+    else scalingFactor = (log(angular_vel.length() + 1) + 1);
+
+    // Clamp to be between MIN and MAX value
+    scalingFactor = std::min(std::max(scalingFactor, MIN_SCALING_FACTOR), MAX_SCALING_FACTOR);
+    return scalingFactor;
+};
+
+inline Eigen::MatrixXf getScalingMatrixLog(const tf::Vector3 &angular_vel, bool isCam){    
+    
+    Eigen::VectorXf scalingVector = Eigen::VectorXf::Ones(9);
+    Eigen::MatrixXf scalingMatrix (9, 9);
+
+    scalingVector[0] = (log(fabs(angular_vel.getX()) + 1) + 1 );   //TODO: alternative: last_translated_confidence * pow(10, (log(fabs(angular_vel.getX()) + 1) + 1 ));
+    scalingVector[1] = (log(fabs(angular_vel.getY()) + 1) + 1 );
+    scalingVector[2] = (log(fabs(angular_vel.getZ()) + 1) + 1 );
+    // scalingVector[3] = (log(fabs(angular_vel.getX()) + 1) + 1 );  //TODO: check if x -> roll, y -> pitch ...
+    // scalingVector[4] = (log(fabs(angular_vel.getY()) + 1) + 1 );
+    // scalingVector[5] = (log(fabs(angular_vel.getZ()) + 1) + 1 );
+    scalingVector[6] = (log(fabs(angular_vel.getX()) + 1) + 1 );
+    scalingVector[7] = (log(fabs(angular_vel.getY()) + 1) + 1 );
+    scalingVector[8] = (log(fabs(angular_vel.getZ()) + 1) + 1 );
+
+    if(isCam){
+        scalingVector *= last_translated_confidence;
+    }
+
+    // Clamp to be between MIN and MAX value
+    for(int i = 0; i < scalingVector.size(); i++){
+        scalingVector[i] = std::min(std::max(scalingVector[i], MIN_SCALING_FACTOR), MAX_SCALING_FACTOR);
+    }
+
+    scalingMatrix << 
+            scalingVector[0], 0, 0, 0, 0, 0, 0, 0, 0,
+             0, scalingVector[1], 0, 0, 0, 0, 0, 0, 0,
+             0, 0, scalingVector[2], 0, 0, 0, 0, 0, 0,
+             0, 0, 0, scalingVector[3], 0, 0, 0, 0, 0,
+             0, 0, 0, 0, scalingVector[4], 0, 0, 0, 0,
+             0, 0, 0, 0, 0, scalingVector[5], 0, 0, 0,
+             0, 0, 0, 0, 0, 0, scalingVector[6], 0, 0,
+             0, 0, 0, 0, 0, 0, 0, scalingVector[7], 0,
+             0, 0, 0, 0, 0, 0, 0, 0, scalingVector[8];
+        
+    return scalingMatrix;
+
+};
+
+
+/** ----------------------------------------------------
+ * ----------------- Linear Kalman Filter --------------
+ * -----------------------------------------------------*/
 
 // LKF state
 Eigen::VectorXf state = Eigen::VectorXf::Zero(9); //(x, y, z, roll, pitch, yaw, w_x, w_y, w_z) -> initial 0
-Eigen::VectorXf statePredicted = Eigen::VectorXf::Zero(9); //(x, y, z, roll, pitch, yaw, w_x, w_y, w_z) -> initial 0
-Eigen::VectorXf stateUpdated = Eigen::VectorXf::Zero(9); //(x, y, z, roll, pitch, yaw, w_x, w_y, w_z) -> initial 0
 
 // State propagation matrix F
 Eigen::MatrixXf F(9, 9);
@@ -239,20 +320,16 @@ Eigen::MatrixXf H = Eigen::MatrixXf::Identity(9, 9); // check depending on senso
 // TODO: MAKE SMALLER BEFORE NEXT TEST
 Eigen::MatrixXf Q_init = 0.1 * Eigen::MatrixXf::Identity(9, 9); // process noise covariance matrix Q / System prediction noise -> how accurate is model
 // takes influences like wind, bumps etc into account -> should be rather small compared to P
-// TODO: determine Q -> modell konstant
 
 // measurement noise covariance matrix
-// Eigen::MatrixXf R(9,9);
 Eigen::MatrixXf R_imu(9, 9);
 Eigen::MatrixXf R_cam(9, 9); // evtl z achse manuell hohe varianz geben
-
-bool firstIteration = true;
-
 
 // Prediction Step
 void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
 {
-
+    // Cross product with the normal vector of the ground
+    // Note: Normal vector points INTO the ground (0,0,-1)
     F <<0, 0, 0, 0, 0, 0, 0, -(dT * r_sphere), 0,
         0, 0, 0, 0, 0, 0, (dT * r_sphere), 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -263,29 +340,18 @@ void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0;
 
-    G << 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 1, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 1, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 1, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 1, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 1, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 1;
+    // predict state (x_pri)
+    state = F * state + G * u;   // 9x9 * 9x1 = 9x1
 
-    // predict state
-    //COMMENT IN NEXT LINE IF USING PREDICTION STEP ONLY
-    statePredicted = F * state + G * u;
-    //statePredicted = F * stateUpdated + G * u;   // 9x9 * 9x1 = 9x1   //here: x_pri
-    state = statePredicted;
-    P = F * P * F.transpose() + Q; // here: calculate P_pri   // 9x9 * 9x9 * 9x9 + 9x9 = 9x9
+    // calculate P_pri
+    P = F * P * F.transpose() + Q; // 9x9 * 9x9 * 9x9 + 9x9 = 9x9
 
     // predict measurement
-    z = H * statePredicted; 
+    z = H * state; 
 }
 
 // Update Step -> measurement comes from either imu or cam callback
-void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const Eigen::VectorXf &predictedStateTransformed)
+void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R)
 {
     // innovation covariance
     Eigen::MatrixXf S = H * P * H.transpose() + R; // all 9x9
@@ -293,16 +359,23 @@ void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R, const E
     // kalman gain
     Eigen::MatrixXf K = P * H.transpose() * S.inverse(); // all 9x9
 
-    // update state estimation -> correction of state
     // calculate innovation
     Eigen::VectorXf innovation = measurement - z;      // 9x1 - 9x1 = 9x1
-    stateUpdated = predictedStateTransformed + (K * innovation);                  // calculate x_pos    // 9x1 + (9x9 * 9x1) = 9x1 + 9x1 = 9x1
-    state = stateUpdated;
+    
+    // update state estimation -> correction of state (x_pos)
+    state = state + (K * innovation);                  //// 9x1 + (9x9 * 9x1) = 9x1 + 9x1 = 9x1
+    
+    // Update covariance matrix (P_pos)
     P = (Eigen::MatrixXf::Identity(9, 9) - K * H) * P; // (9x9 - (9x9 * 9x9)) * 9x9 = 9x9
-
 }
 
-void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m){
+// The magic function. Includes the interpolation of the faster stream.
+void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
+{
+    /*
+    * Interpolation of the faster stream, calculation in global frame 
+    * will result in a Delta which applies in local frame.
+    */
 
     // calculate dT
     double dT = (m->header.stamp - last_imu_pose.header.stamp).toSec();
@@ -311,18 +384,13 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m){
     ros::Time stamp_current = m->header.stamp;
     tfScalar t_current = stamp_current.toSec();
 
-    waitForAccumulator(t_current); // wait so that imu time stamp is inbetween cam time stamps
+    // wait so that imu time stamp is inbetween cam time stamps
+    waitForAccumulator(t_current); 
 
-    // pose that stores delta values of kf output
-    tf::Pose filteredDeltaPose;
-    tf::Stamped<tf::Pose> filteredDeltaPoseUpdate;
-    tf::Stamped<tf::Pose> filteredDeltaPosePrediction;
-    tf::Stamped<tf::Pose> filteredPose;
-    tf::poseStampedMsgToTF(filtered_pose_msg, filteredPose);     
-    tf::Quaternion current_rotation = filteredPose.getRotation();
-    tf::Transform current_tf(current_rotation);
+    /*
+    * Interpolation of camera pose
+    */ 
 
-    // interpolation camera pose
     // Convert geometry_msgs to Quaternion format
     tf::Quaternion q1, q2, q_res;
     tf::quaternionMsgToTF(accumulator.front().pose.pose.orientation, q1);
@@ -345,15 +413,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m){
     // Construct interpolated result
     pose_interpolated = tf::Pose(q_res, v_res);
 
-    if(firstIteration){
-        pose_interpolated.setRotation(tf::createQuaternionFromRPY(0,0,0));
-        //  ROS_INFO("%f",pose_interpolated.getRotation().length());
-        last_pose_interpolated.setOrigin(tf::Vector3(0,0,0));
-        last_pose_interpolated.setRotation(tf::createQuaternionFromRPY(0,0,0));
-        firstIteration = false;
-    }
-
-    // Rotate interpolated pose via basis change
+    // Rotate interpolated pose via basis change, into the frame of the faster stream
     pose_interpolated.mult(pose_interpolated, tf_axes_imu2cam);
     pose_interpolated.mult(tf_map_imu2cam, pose_interpolated);
 
@@ -361,49 +421,70 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m){
     uint8_t pose_confidence_interpolated = (t * accumulator.front().tracker_confidence) + ((1 - t) * accumulator.back().tracker_confidence);
     last_translated_confidence = (float) confidenceTranslator(pose_confidence_interpolated);
 
-    // interpolation camera angular velocities
+    // interpolation camera angular velocities, which are given in LOCAL frame
     tf::Vector3 w1, w2, w_res;
     w1.setX(accumulator.front().imu.angular_velocity.x);
-    w1.setY(accumulator.front().imu.angular_velocity.y);
-    w1.setZ(accumulator.front().imu.angular_velocity.z);
+    w1.setY(-accumulator.front().imu.angular_velocity.y);
+    w1.setZ(-accumulator.front().imu.angular_velocity.z);
     w2.setX(accumulator.back().imu.angular_velocity.x);
-    w2.setY(accumulator.back().imu.angular_velocity.y);
-    w2.setZ(accumulator.back().imu.angular_velocity.z);
+    w2.setY(-accumulator.back().imu.angular_velocity.y);
+    w2.setZ(-accumulator.back().imu.angular_velocity.z);
     w_res = tf::lerp(w1, w2, t);
-
-    //temp!!!
-    w_res.setX(-w_res.getX());        // set according to github frames
-    //w_res.setY(-w_res.getY());        // set to get same result for input
-    w_res.setZ(-w_res.getZ());
-
-    // Rotate interpolated angular velocity via basis change
+    // Rotate interpolated angular velocity via basis change into the frame of the faster stream
     tf::Pose angularVelPose;  // use tf::Pose to save angular velocity in x,y,z elements for multiplication operation
     angularVelPose.setOrigin(w_res);
     angularVelPose.setRotation(rot_zero);
-
     angularVelPose.mult(angularVelPose, tf_axes_imu2cam);
-
-    // angularVelPose = current_tf * angularVelPose;
-
     angularVelPose.mult(tf_map_imu2cam, angularVelPose);
 
-    // convert temporary tf::Pose back to sensor_msgs::Imu
+    // convert temporary pose back to sensor_msgs::Imu
     sensor_msgs::Imu cam_angular_vel_interpolated;
     cam_angular_vel_interpolated.angular_velocity.x = angularVelPose.getOrigin().getX();
     cam_angular_vel_interpolated.angular_velocity.y = angularVelPose.getOrigin().getY();
     cam_angular_vel_interpolated.angular_velocity.z = angularVelPose.getOrigin().getZ();
 
-    // Angular velocities transformation
+    /*
+    * Rotate the local deltas into the global frame
+    */
+
+    // Angular velocities transformation from local to global
     tf::Vector3 tf_angular_velocity_imu;
     tf::vector3MsgToTF(imu_angular_vel_curr.angular_velocity, tf_angular_velocity_imu);
     tf::Vector3 tf_angular_velocity_cam;
     tf::vector3MsgToTF(cam_angular_vel_interpolated.angular_velocity, tf_angular_velocity_cam);
 
-    // Rotate angular velocities -> local to global frame
+    // Use the current estimated rotation to make the angular velocities global
+    tf::Stamped<tf::Pose> filteredPose;
+    tf::poseStampedMsgToTF(filtered_pose_msg, filteredPose);     
+    tf::Quaternion current_rotation = filteredPose.getRotation();
+    tf::Transform current_tf(current_rotation);
     tf::Vector3 tf_angular_velocity_imu_rotated = current_tf * tf_angular_velocity_imu;
     tf::Vector3 tf_angular_velocity_cam_rotated = current_tf * tf_angular_velocity_cam;
 
+    // Calculate delta of imu pose
+    tf::Pose imu_diff = pose_diff(m, last_imu_pose);
+    geometry_msgs::Pose imu_diff_geom_msgs;
+    tf::poseTFToMsg(imu_diff, imu_diff_geom_msgs);
+    tf::Pose imu_diff_rotated = current_tf * imu_diff;
 
+    // In first iteration, last interpolation does not exist. Use the first msg instead
+    if (fabs(last_pose_interpolated.getRotation().length() - 1.0) > small_number) {
+        ROS_WARN("Uninitialized quaternion, length: %f", last_pose_interpolated.getRotation().length());
+        tf::Stamped<tf::Pose> last_pose_cam_stamped;
+        tf::poseStampedMsgToTF(last_cam_pose, last_pose_cam_stamped);
+        last_pose_interpolated = last_pose_cam_stamped;
+        last_pose_interpolated.mult(last_pose_interpolated, tf_axes_imu2cam);
+        last_pose_interpolated.mult(tf_map_imu2cam, last_pose_interpolated);
+        ROS_WARN("Attempted fix, length: %f", last_pose_interpolated.getRotation().length());
+    }
+    
+    // Calculate delta of cam pose
+    tf::Pose cam_diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
+    geometry_msgs::Pose cam_diff_geom_msgs;
+    tf::poseTFToMsg(cam_diff_interpolated, cam_diff_geom_msgs);
+    tf::Pose cam_diff_rotated = current_tf * cam_diff_interpolated;
+    
+    // Put everything into the LKF process control vector
     Eigen::Vector3f eigen_angular_velocity_imu_rotated;
     eigen_angular_velocity_imu_rotated[0] = tf_angular_velocity_imu_rotated.getX();
     eigen_angular_velocity_imu_rotated[1] = tf_angular_velocity_imu_rotated.getY();
@@ -413,202 +494,92 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m){
     eigen_angular_velocity_cam_rotated[0] = tf_angular_velocity_cam_rotated.getX();
     eigen_angular_velocity_cam_rotated[1] = tf_angular_velocity_cam_rotated.getY();
     eigen_angular_velocity_cam_rotated[2] = tf_angular_velocity_cam_rotated.getZ();
+   
+    // TODO: Use Covariances to decide which should be the input? 
+    // Or maybe use interpolation based on the covariances to decide the input?
 
-    // Calculate delta of imu pose
-    tf::Pose imu_diff = pose_diff(m, last_imu_pose);
-    geometry_msgs::Pose imu_diff_geom_msgs;
-    tf::poseTFToMsg(imu_diff, imu_diff_geom_msgs);
-        
-    // Calculate delta of cam pose
-    tf::Pose cam_diff_interpolated = pose_interpolated.inverseTimes(last_pose_interpolated);
-    geometry_msgs::Pose cam_diff_geom_msgs;
-    tf::poseTFToMsg(cam_diff_interpolated, cam_diff_geom_msgs);
+   // Make vector 9dof for predict step
+    Eigen::VectorXf eigen_angular_velocity_rotated_9dof = Eigen::VectorXf::Zero(9);
+    eigen_angular_velocity_rotated_9dof[3] = getRollFromQuaternion(cam_diff_geom_msgs.orientation);
+    eigen_angular_velocity_rotated_9dof[4] = getPitchFromQuaternion(cam_diff_geom_msgs.orientation);
+    eigen_angular_velocity_rotated_9dof[5] = getYawFromQuaternion(cam_diff_geom_msgs.orientation);
+    eigen_angular_velocity_rotated_9dof[6] = eigen_angular_velocity_cam_rotated[0];
+    eigen_angular_velocity_rotated_9dof[7] = eigen_angular_velocity_cam_rotated[1];
+    eigen_angular_velocity_rotated_9dof[8] = eigen_angular_velocity_cam_rotated[2];
 
-    // 9dof u vector for predict step
-    Eigen::VectorXf systemInput = Eigen::VectorXf::Zero(9);
-    // systemInput[3] = getRollFromQuaternion(imu_diff_geom_msgs.orientation);
-    // systemInput[4] = getPitchFromQuaternion(imu_diff_geom_msgs.orientation);
-    // systemInput[5] = getYawFromQuaternion(imu_diff_geom_msgs.orientation);
-    // systemInput[6] = eigen_angular_velocity_imu_rotated[0];
-    // systemInput[7] = eigen_angular_velocity_imu_rotated[1];
-    // systemInput[8] = eigen_angular_velocity_imu_rotated[2];
-    systemInput[3] = getRollFromQuaternion(cam_diff_geom_msgs.orientation);
-    systemInput[4] = getPitchFromQuaternion(cam_diff_geom_msgs.orientation);
-    systemInput[5] = getYawFromQuaternion(cam_diff_geom_msgs.orientation);
-    systemInput[6] = eigen_angular_velocity_cam_rotated[0];
-    systemInput[7] = eigen_angular_velocity_cam_rotated[1];
-    systemInput[8] = eigen_angular_velocity_cam_rotated[2];
+    /* 
+     * Calculate Scaling factor for covariance matrices
+     + Take camera confidence and velocity into account
+     + Low confidence -> higher variance -> more uncertainty
+     + High angular velocity -> higher variance -> more uncertainty
+     */
+    
+    // scalar - wise
+    
+    // exp and confidence
+    //float scalingFactorCamera = getScalingFactorExp(tf_angular_velocity_cam_rotated, true);
+    //float scalingFactorImu = getScalingFactorExp(tf_angular_velocity_imu_rotated, false);
 
+    float scalingFactorCamera = getScalingFactorLog(tf_angular_velocity_cam_rotated, true);
+    float scalingFactorImu = getScalingFactorLog(tf_angular_velocity_imu_rotated, false);
 
-    geometry_msgs::Pose tempPose1;
-    tf::poseTFToMsg(pose_interpolated, tempPose1);
+    // component - wise
 
-    geometry_msgs::PoseStamped tempPose2;
-    tempPose2=*m;
+    // exp and confidence
+    // Eigen::MatrixXf scalingMatrixCamera = getScalingMatrixExp(tf_angular_velocity_cam_rotated, true);
+    // Eigen::MatrixXf scalingMatrixImu = getScalingMatrixExp(tf_angular_velocity_imu_rotated, false);
 
-    // ROS_INFO("pose_interpolated:\nroll:\t%f\npitch:\t%f\nyaw:\t%f\n", getRollFromQuaternion(tempPose1.orientation), getPitchFromQuaternion(tempPose1.orientation), getYawFromQuaternion(tempPose1.orientation));
-    // ROS_INFO("imu:\nroll:\t%f\npitch:\t%f\nyaw:\t%f\n", getRollFromQuaternion(tempPose2.pose.orientation), getPitchFromQuaternion(tempPose2.pose.orientation), getYawFromQuaternion(tempPose2.pose.orientation));
+    // log and confidence
+    // Eigen::MatrixXf scalingMatrixCamera = getScalingMatrixLog(tf_angular_velocity_cam_rotated, true);
+    // Eigen::MatrixXf scalingMatrixImu = getScalingMatrixLog(tf_angular_velocity_imu_rotated, false);
 
-    // ROS_INFO("cam:\ndRoll:\t%f\ndPitch:\t%f\ndYaw:\t%f\n", getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation));
-    // ROS_INFO("imu:\ndRoll:\t%f\ndPitch:\t%f\ndYaw:\t%f\n", getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation));
-
-    // ROS_INFO("cam:\ndW_x:\t%f\ndW_y:\t%f\ndW_z:\t%f\n", eigen_angular_velocity_cam_rotated[0], eigen_angular_velocity_cam_rotated[1], eigen_angular_velocity_cam_rotated[2]);
-    // ROS_INFO("imu:\ndW_x:\t%f\ndW_y:\t%f\ndW_z:\t%f\n", eigen_angular_velocity_imu_rotated[0], eigen_angular_velocity_imu_rotated[1], eigen_angular_velocity_imu_rotated[2]);
-
-
-    // Calculate Scaling factor for covariance matrices by using angular velocities and confidence of T265
-    // Scalar - wise
-    /*float scalingFactorCamera = last_translated_confidence * exp(tf_angular_velocity_cam_rotated.length()); //exp(tf_angular_velocity_cam_rotated.length()); //last_translated_confidence;
-    float scalingFactorImu = exp(tf_angular_velocity_imu_rotated.length());*/
-
-    /*float scalingFactorCamera = last_translated_confidence; //exp(tf_angular_velocity_cam_rotated.length()); //last_translated_confidence;
-    float scalingFactorImu = log(tf_angular_velocity_imu_rotated.length() + 1);*/
-
-    // Scaling factor limiter
-    /*scalingFactorCamera = (scalingFactorCamera < MIN_SCALING_FACTOR) ? MIN_SCALING_FACTOR : (scalingFactorCamera > MAX_SCALING_FACTOR) ? MAX_SCALING_FACTOR : scalingFactorCamera;
-    scalingFactorImu = (scalingFactorImu < MIN_SCALING_FACTOR) ? MIN_SCALING_FACTOR : (scalingFactorImu > MAX_SCALING_FACTOR) ? MAX_SCALING_FACTOR : scalingFactorImu;*/
-
-    // component - wise (euler-fct)
-    /*Eigen::VectorXf scalingVectorCamera = Eigen::VectorXf::Ones(9);
-    scalingVectorCamera[0] = exp(fabs(tf_angular_velocity_cam_rotated.getX()));
-    scalingVectorCamera[1] = exp(fabs(tf_angular_velocity_cam_rotated.getY()));
-    scalingVectorCamera[2] = exp(fabs(tf_angular_velocity_cam_rotated.getZ()));
-    scalingVectorCamera[6] = exp(fabs(tf_angular_velocity_cam_rotated.getX()));
-    scalingVectorCamera[7] = exp(fabs(tf_angular_velocity_cam_rotated.getY()));
-    scalingVectorCamera[8] = exp(fabs(tf_angular_velocity_cam_rotated.getZ()));
-
-    scalingMatrixCamera << scalingVectorCamera[0], 0, 0, 0, 0, 0, 0, 0, 0,
-             0, scalingVectorCamera[1], 0, 0, 0, 0, 0, 0, 0,
-             0, 0, scalingVectorCamera[2], 0, 0, 0, 0, 0, 0,
-             0, 0, 0, scalingVectorCamera[3], 0, 0, 0, 0, 0,
-             0, 0, 0, 0, scalingVectorCamera[4], 0, 0, 0, 0,
-             0, 0, 0, 0, 0, scalingVectorCamera[5], 0, 0, 0,
-             0, 0, 0, 0, 0, 0, scalingVectorCamera[6], 0, 0,
-             0, 0, 0, 0, 0, 0, 0, scalingVectorCamera[7], 0,
-             0, 0, 0, 0, 0, 0, 0, 0, scalingVectorCamera[8];
-
-    scalingMatrixCamera = last_translated_confidence * scalingMatrixCamera;
-
-    Eigen::VectorXf scalingVectorImu = Eigen::VectorXf::Ones(9);
-    scalingVectorImu[0] = exp(fabs(tf_angular_velocity_imu_rotated.getX()));
-    scalingVectorImu[1] = exp(fabs(tf_angular_velocity_imu_rotated.getY()));
-    scalingVectorImu[2] = exp(fabs(tf_angular_velocity_imu_rotated.getZ()));
-    scalingVectorImu[6] = exp(fabs(tf_angular_velocity_imu_rotated.getX()));
-    scalingVectorImu[7] = exp(fabs(tf_angular_velocity_imu_rotated.getY()));
-    scalingVectorImu[8] = exp(fabs(tf_angular_velocity_imu_rotated.getZ()));
-
-    Eigen::MatrixXf scalingMatrixImu (9, 9);
-    scalingMatrixImu << scalingVectorImu[0], 0, 0, 0, 0, 0, 0, 0, 0,
-             0, scalingVectorImu[1], 0, 0, 0, 0, 0, 0, 0,
-             0, 0, scalingVectorImu[2], 0, 0, 0, 0, 0, 0,
-             0, 0, 0, scalingVectorImu[3], 0, 0, 0, 0, 0,
-             0, 0, 0, 0, scalingVectorImu[4], 0, 0, 0, 0,
-             0, 0, 0, 0, 0, scalingVectorImu[5], 0, 0, 0,
-             0, 0, 0, 0, 0, 0, scalingVectorImu[6], 0, 0,
-             0, 0, 0, 0, 0, 0, 0, scalingVectorImu[7], 0,
-             0, 0, 0, 0, 0, 0, 0, 0, scalingVectorImu[8];
-
-    */
-
-
-    // Component-wise (log - fct) 
-   /* Eigen::VectorXf scalingVectorCamera = Eigen::VectorXf::Ones(9);
-    scalingVectorCamera[0] = log(fabs(tf_angular_velocity_cam_rotated.getX()) + 1);
-    scalingVectorCamera[1] = log(fabs(tf_angular_velocity_cam_rotated.getY()) + 1);
-    scalingVectorCamera[2] = log(fabs(tf_angular_velocity_cam_rotated.getZ()) + 1);
-    scalingVectorCamera[6] = log(fabs(tf_angular_velocity_cam_rotated.getX()) + 1);
-    scalingVectorCamera[7] = log(fabs(tf_angular_velocity_cam_rotated.getY()) + 1);
-    scalingVectorCamera[8] = log(fabs(tf_angular_velocity_cam_rotated.getZ()) + 1);
-
-    Eigen::MatrixXf scalingMatrixCamera (9, 9);
-    scalingMatrixCamera << scalingVectorCamera[0], 0, 0, 0, 0, 0, 0, 0, 0,
-             0, scalingVectorCamera[1], 0, 0, 0, 0, 0, 0, 0,
-             0, 0, scalingVectorCamera[2], 0, 0, 0, 0, 0, 0,
-             0, 0, 0, scalingVectorCamera[3], 0, 0, 0, 0, 0,
-             0, 0, 0, 0, scalingVectorCamera[4], 0, 0, 0, 0,
-             0, 0, 0, 0, 0, scalingVectorCamera[5], 0, 0, 0,
-             0, 0, 0, 0, 0, 0, scalingVectorCamera[6], 0, 0,
-             0, 0, 0, 0, 0, 0, 0, scalingVectorCamera[7], 0,
-             0, 0, 0, 0, 0, 0, 0, 0, scalingVectorCamera[8];
-
-
-    Eigen::VectorXf scalingVectorImu = Eigen::VectorXf::Ones(9);
-    scalingVectorImu[0] = log(fabs(tf_angular_velocity_imu_rotated.getX()) + 1);
-    scalingVectorImu[1] = log(fabs(tf_angular_velocity_imu_rotated.getY()) + 1);
-    scalingVectorImu[2] = log(fabs(tf_angular_velocity_imu_rotated.getZ()) + 1);
-    scalingVectorImu[6] = log(fabs(tf_angular_velocity_imu_rotated.getX()) + 1);
-    scalingVectorImu[7] = log(fabs(tf_angular_velocity_imu_rotated.getY()) + 1);
-    scalingVectorImu[8] = log(fabs(tf_angular_velocity_imu_rotated.getZ()) + 1);
-
-    Eigen::MatrixXf scalingMatrixImu (9, 9);
-    scalingMatrixImu << scalingVectorImu[0], 0, 0, 0, 0, 0, 0, 0, 0,
-             0, scalingVectorImu[1], 0, 0, 0, 0, 0, 0, 0,
-             0, 0, scalingVectorImu[2], 0, 0, 0, 0, 0, 0,
-             0, 0, 0, scalingVectorImu[3], 0, 0, 0, 0, 0,
-             0, 0, 0, 0, scalingVectorImu[4], 0, 0, 0, 0,
-             0, 0, 0, 0, 0, scalingVectorImu[5], 0, 0, 0,
-             0, 0, 0, 0, 0, 0, scalingVectorImu[6], 0, 0,
-             0, 0, 0, 0, 0, 0, 0, scalingVectorImu[7], 0,
-             0, 0, 0, 0, 0, 0, 0, 0, scalingVectorImu[8];*/
-
-    Eigen::MatrixXf R_cam_scaled = R_cam;// * scalingMatrixCamera;
-    Eigen::MatrixXf R_imu_scaled = R_imu;// * scalingMatrixImu;
+    Eigen::MatrixXf R_cam_scaled = R_cam * scalingFactorCamera;
+    Eigen::MatrixXf R_imu_scaled = R_imu* scalingFactorImu;
 
     Eigen::MatrixXf Q_scaled = Q_init;//* (1 / ((scalingFactorCamera + scalingFactorImu) / 2.0)); //multiply Q with inverse of avg scaling factor of R matrices
     
+    /*
+     * Prediction step
+     */
 
-    // Prediction step
-    predict_state(dT, systemInput, Q_scaled);
+    predict_state(dT, eigen_angular_velocity_rotated_9dof, Q_scaled);
 
-    filteredDeltaPosePrediction.setOrigin(current_tf.inverse() * tf::Vector3(state[0], state[1], state[2]));    //delta translation applied locally -> multiply with current_tf.inverse()
-    filteredDeltaPosePrediction.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));       //rotation delta applied globally -> no transform
+    /*
+     * Update step
+     */
 
-    geometry_msgs::PoseStamped filteredDeltaPosePrediction_msg;
-    tf::poseStampedTFToMsg(filteredDeltaPosePrediction, filteredDeltaPosePrediction_msg);
-    Eigen::VectorXf predictedStateVector (9);   //state, set by prediction step and transformed to global frame
-    predictedStateVector[0] = filteredDeltaPosePrediction.getOrigin().getX();
-    predictedStateVector[1] = filteredDeltaPosePrediction.getOrigin().getY();
-    predictedStateVector[2] = filteredDeltaPosePrediction.getOrigin().getZ();
-    predictedStateVector[3] = getRollFromQuaternion(filteredDeltaPosePrediction_msg.pose.orientation);
-    predictedStateVector[4] = getPitchFromQuaternion(filteredDeltaPosePrediction_msg.pose.orientation);
-    predictedStateVector[5] = getYawFromQuaternion(filteredDeltaPosePrediction_msg.pose.orientation);
-    predictedStateVector[6] = systemInput[6];
-    predictedStateVector[7] = systemInput[7];
-    predictedStateVector[8] = systemInput[8];
-
-
-    // Update step
-    Eigen::VectorXf measurementCam(9);
+    // update using IMU measurements
     Eigen::VectorXf measurementImu(9);
-
-    if (fabs(last_pose_interpolated.getRotation().length() - 1.0) > small_number) {
-        ROS_WARN("Uninitialized quaternion, length: %f", last_pose_interpolated.getRotation().length());
-        last_pose_interpolated = pose_interpolated;
-        ROS_WARN("Attempted fix, length: %f", last_pose_interpolated.getRotation().length());
-    }
-
-    measurementCam << cam_diff_interpolated.getOrigin().getX(), cam_diff_interpolated.getOrigin().getY(), cam_diff_interpolated.getOrigin().getZ(),
-        getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation),
-        tf_angular_velocity_cam_rotated.getX(), tf_angular_velocity_cam_rotated.getY(), tf_angular_velocity_cam_rotated.getZ();
-
-    //update_state(measurementCam, R_cam_scaled, predictedStateVector);   //updates state vector by setting it to stateUpdated at the end
-
-
-    measurementImu << imu_diff.getOrigin().getX(), imu_diff.getOrigin().getY(), imu_diff.getOrigin().getZ(),
+    measurementImu << imu_diff_rotated.getOrigin().getX(), imu_diff_rotated.getOrigin().getY(), imu_diff_rotated.getOrigin().getZ(),
         getRollFromQuaternion(imu_diff_geom_msgs.orientation), getPitchFromQuaternion(imu_diff_geom_msgs.orientation), getYawFromQuaternion(imu_diff_geom_msgs.orientation),
         tf_angular_velocity_imu_rotated.getX(), tf_angular_velocity_imu_rotated.getY(), tf_angular_velocity_imu_rotated.getZ();
 
-    //update_state(measurementImu, R_imu_scaled, state);  //second update based on first update result
+    update_state(measurementImu, R_imu_scaled);
 
-    //pose with delta values (not * current_tf.inverse() because it is already in correct frame)
-    filteredDeltaPoseUpdate.setOrigin(tf::Vector3(state[0], state[1], state[2]));
-    filteredDeltaPoseUpdate.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));  
+    // update using CAM measurements
+    Eigen::VectorXf measurementCam(9);
+    measurementCam << cam_diff_rotated.getOrigin().getX(), cam_diff_rotated.getOrigin().getY(), cam_diff_rotated.getOrigin().getZ(),
+        getRollFromQuaternion(cam_diff_geom_msgs.orientation), getPitchFromQuaternion(cam_diff_geom_msgs.orientation), getYawFromQuaternion(cam_diff_geom_msgs.orientation),
+        tf_angular_velocity_cam_rotated.getX(), tf_angular_velocity_cam_rotated.getY(), tf_angular_velocity_cam_rotated.getZ();
 
-     // pose with non-delta values -> published
-    tf::poseStampedMsgToTF(filtered_pose_msg, filteredPose);      // put last published msg into filteredPose
-    //  SET TO filteredDeltaPosePrediction.inverse() WHEN ONLY USING PREDICT STEP ->
-    filteredPose.mult(filteredPose, filteredDeltaPosePrediction.inverse()); // update of filtered pose
+    update_state(measurementCam, R_cam_scaled);
+
+    /*
+     * Apply the LKF estimation to the filtered pose  
+     */
+
+    // The state contains the Deltas. Convert LKF state to delta tf
+    tf::Pose filteredDeltaPose;
+    filteredDeltaPose.setOrigin(current_tf.inverse() * tf::Vector3(state[0], state[1], state[2]));
+    filteredDeltaPose.setRotation(tf::createQuaternionFromRPY(state[3], state[4], state[5]));
+
+    // Apply delta 
+    filteredPose.mult(filteredPose, filteredDeltaPose.inverse()); // update der filtered pose
     tf::poseStampedTFToMsg(filteredPose, filtered_pose_msg);      // update filtered_Pose_msg
+
+    /*
+     * Publish to topic
+     */
 
     // Construct msg
     filtered_pose_msg.header.frame_id = "odom";
@@ -648,6 +619,7 @@ void imuMsgCallback(const geometry_msgs::PoseStamped::ConstPtr &m)
 
         // Otherwise, if IMU interpolation is active, push current pose to queue
     }
+    // TODO: Redefine pushToAccumulator to be templated. Not important right now
     /*else if (interpolate == IMU)
     {
         pushToAccumulator(m);
@@ -665,6 +637,7 @@ void camMsgCallback(const realsense_pipeline_fix::CameraPoseAngularVelocityConst
         ROS_INFO("INITIALIZED CAM");
         last_cam_pose = m->pose;
         cam_angular_vel_curr = m->imu;
+        pushToAccumulator(m);
         initialized_cam = true;
         return;
     }
@@ -673,9 +646,6 @@ void camMsgCallback(const realsense_pipeline_fix::CameraPoseAngularVelocityConst
     if (interpolate == CAM)
     {
         pushToAccumulator(m);
-        //std::cout << "cam_msg_confidence: " << m->tracker_confidence << std::endl;
-        //ROS_INFO("confidence %d", m->tracker_confidence);
-        // Otherwise, if IMU interpolation is active, wait for the IMU poses in the queue
     }
     else if (interpolate == IMU)
     {
@@ -702,7 +672,7 @@ void camMsgCallback(const realsense_pipeline_fix::CameraPoseAngularVelocityConst
         rotated_pose.mult(tf_map_imu2cam, rotated_pose);
 
         debug_pose_msg.header = m->header;
-        debug_pose_msg.header.frame_id = "map3";
+        debug_pose_msg.header.frame_id = "odom";
         tf::poseTFToMsg(rotated_pose, debug_pose_msg.pose);
         debug_pose_pub.publish(debug_pose_msg);
     }
@@ -733,7 +703,6 @@ int main(int argc, char **argv)
     nh.param<std::string>("topic_pose_cam", topic_pose_cam, std::string(topic_pose_cam_default));
     nh.param<std::string>("frame_id_imu", frame_id_imu, std::string(frame_id_imu_default));
     nh.param<std::string>("frame_id_cam", frame_id_cam, std::string(frame_id_cam_default));
-    // TODO topic param für imu raw
     nh.param<int>("imu_rate", imu_rate, 125); // Jaspers Code uses 125 Hz by default
     nh.param<int>("cam_rate", cam_rate, 200); // Intels T265 uses 200 Hz by default
     nh.param<double>("sphere_radius", r_sphere, 0.145);
@@ -791,17 +760,17 @@ int main(int argc, char **argv)
     ros::Subscriber cam_pose_sub, imu_pose_sub, imu_vel_sub, cam_imu_vel_sub;
     if (interpolate == IMU)
     {
-        cam_pose_sub = nh.subscribe<realsense_pipeline_fix::CameraPoseAngularVelocity>("/camera/poseAndImu", 1000, camMsgCallback);
+        cam_pose_sub = nh.subscribe<realsense_pipeline_fix::CameraPoseAngularVelocity>(topic_pose_camImu_default, 1000, camMsgCallback);
         imu_pose_sub = nh_fast.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
     }
     else if (interpolate == CAM)
     {
-        cam_pose_sub = nh_fast.subscribe<realsense_pipeline_fix::CameraPoseAngularVelocity>("/camera/poseAndImu", 1000, camMsgCallback);
+        cam_pose_sub = nh_fast.subscribe<realsense_pipeline_fix::CameraPoseAngularVelocity>(topic_pose_camImu_default, 1000, camMsgCallback);
         imu_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
     }
     else if (interpolate == NONE)
     {
-        cam_pose_sub = nh.subscribe<realsense_pipeline_fix::CameraPoseAngularVelocity>("/camera/poseAndImu", 1000, camMsgCallback);
+        cam_pose_sub = nh.subscribe<realsense_pipeline_fix::CameraPoseAngularVelocity>(topic_pose_camImu_default, 1000, camMsgCallback);
         imu_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose_imu, 1000, imuMsgCallback);
     }
     imu_vel_sub = nh.subscribe<sensor_msgs::Imu>("orientation", 1000, orientationImuCallback);
@@ -815,11 +784,25 @@ int main(int argc, char **argv)
     slow_rate = std::min(cam_rate, imu_rate);
     ros::Rate r(fast_rate);
 
-    // initialise matrices & vectors
+    /*
+    *  Initialise matrices & vectors
+    */
+
     // norm vector
     eigen_norm_vector[0] = 0.0;
     eigen_norm_vector[1] = 0.0;
     eigen_norm_vector[2] = -1.0;
+
+    // Control input matrix
+    G << 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 1, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 1, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 1, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 1, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 1, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 1;
 
     // IMU:
     Eigen::VectorXf imu_variances = Eigen::VectorXf::Zero(9); //[x,y,z,r,p,y, angular_vel_x, angular_vel_y, angular_vel_z]^T
