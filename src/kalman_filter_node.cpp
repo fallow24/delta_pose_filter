@@ -525,7 +525,7 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // TODO: Use Covariances to decide which should be the input? 
     // Or maybe use interpolation based on the covariances to decide the input?
 
-   // Make vector 9dof for predict step
+    // Make vector 9dof for predict step
     Eigen::VectorXf eigen_angular_velocity_rotated_9dof = Eigen::VectorXf::Zero(9);
     eigen_angular_velocity_rotated_9dof[3] = getRollFromQuaternion(cam_diff_geom_msgs.orientation);
     eigen_angular_velocity_rotated_9dof[4] = getPitchFromQuaternion(cam_diff_geom_msgs.orientation);
@@ -533,6 +533,12 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     eigen_angular_velocity_rotated_9dof[6] = eigen_angular_velocity_cam_rotated[0];
     eigen_angular_velocity_rotated_9dof[7] = eigen_angular_velocity_cam_rotated[1];
     eigen_angular_velocity_rotated_9dof[8] = eigen_angular_velocity_cam_rotated[2];
+    // eigen_angular_velocity_rotated_9dof[3] = getRollFromQuaternion(imu_diff_geom_msgs.orientation);
+    // eigen_angular_velocity_rotated_9dof[4] = getPitchFromQuaternion(imu_diff_geom_msgs.orientation);
+    // eigen_angular_velocity_rotated_9dof[5] = getYawFromQuaternion(imu_diff_geom_msgs.orientation);
+    // eigen_angular_velocity_rotated_9dof[6] = eigen_angular_velocity_imu_rotated[0];
+    // eigen_angular_velocity_rotated_9dof[7] = eigen_angular_velocity_imu_rotated[1];
+    // eigen_angular_velocity_rotated_9dof[8] = eigen_angular_velocity_imu_rotated[2];
 
     /* 
      * Calculate Scaling factor for covariance matrices
@@ -552,21 +558,21 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // float scalingFactorImu = getScalingFactorExp(tf_angular_velocity_imu_rotated, false);
 
     // log and cofidence
-    // float scalingFactorCamera = getScalingFactorLog(tf_angular_velocity_cam_rotated, true);
-    // float scalingFactorImu = getScalingFactorLog(tf_angular_velocity_imu_rotated, false);
+    float scalingFactorCamera = getScalingFactorLog(tf_angular_velocity_cam_rotated, true);
+    float scalingFactorImu = getScalingFactorLog(tf_angular_velocity_imu_rotated, false);
 
     // component - wise
 
-    // exp and confidence
-    Eigen::MatrixXf scalingMatrixCamera = getScalingMatrixExp(tf_angular_velocity_cam_rotated, true);
-    Eigen::MatrixXf scalingMatrixImu = getScalingMatrixExp(tf_angular_velocity_imu_rotated, false);
+    // // exp and confidence
+    // Eigen::MatrixXf scalingMatrixCamera = getScalingMatrixExp(tf_angular_velocity_cam_rotated, true);
+    // Eigen::MatrixXf scalingMatrixImu = getScalingMatrixExp(tf_angular_velocity_imu_rotated, false);
 
     // log and confidence
     // Eigen::MatrixXf scalingMatrixCamera = getScalingMatrixLog(tf_angular_velocity_cam_rotated, true);
     // Eigen::MatrixXf scalingMatrixImu = getScalingMatrixLog(tf_angular_velocity_imu_rotated, false);
 
-    Eigen::MatrixXf R_cam_scaled = R_cam * scalingMatrixCamera;
-    Eigen::MatrixXf R_imu_scaled = R_imu* scalingMatrixImu;
+    Eigen::MatrixXf R_cam_scaled = R_cam * scalingFactorCamera;
+    Eigen::MatrixXf R_imu_scaled = R_imu * scalingFactorImu;
 
     // std::cout << "R_s_cam:\n" << scalingMatrixCamera << std::endl;
     // std::cout << "R_s_imu:\n" << scalingMatrixImu << std::endl;
@@ -582,8 +588,8 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
 
     // component - wise
 
-    Eigen::MatrixXf inverseScalingMatrix = getInverseScalingMatrix(scalingMatrixCamera, scalingMatrixImu);
-    Eigen::MatrixXf Q_scaled = Q_init * inverseScalingMatrix;
+    // Eigen::MatrixXf inverseScalingMatrix = getInverseScalingMatrix(scalingMatrixCamera, scalingMatrixImu);
+    Eigen::MatrixXf Q_scaled = Q_init;// * inverseScalingMatrix;
 
     /*
      * Prediction step
@@ -853,15 +859,15 @@ int main(int argc, char **argv)
 
     // IMU:
     Eigen::VectorXf imu_variances = Eigen::VectorXf::Zero(9); //[x,y,z,r,p,y, angular_vel_x, angular_vel_y, angular_vel_z]^T
-    imu_variances[0] = 0.1; // 0.000000002685523762832521;
-    imu_variances[1] = 0.1; //0.0000001275576292974622;
-    imu_variances[2] = 0.001;  //not measured
-    imu_variances[3] = 0.1; //0.009465788593315629;
-    imu_variances[4] = 0.1; //0.0001922401945712851;
-    imu_variances[5] = 0.1; //0.00007255917842660958;
-    imu_variances[6] = 0.1; //0.00008535226550528127;
-    imu_variances[7] = 0.1; //0.00002174349644727122;
-    imu_variances[8] = 1; //0.00001210644017747147;
+    imu_variances[0] = 0.1;//0.000000002685523762832521;//0.1; // 0.000000002685523762832521;       //new: 
+    imu_variances[1] = 0.1;//0.0000001275576292974622; //0.1; //0.0000001275576292974622;           //new: 
+    imu_variances[2] = 0.001;  //not measured                                                       //new: 
+    imu_variances[3] = 0.1;//0.009465788593315629; //0.1; //0.009465788593315629;                   //new: 
+    imu_variances[4] = 0.1;//0.0001922401945712851; //0.1; //0.0001922401945712851;                 //new: 
+    imu_variances[5] = 0.1;//0.00007255917842660958; //0.1; //0.00007255917842660958;               //new: 
+    imu_variances[6] = 0.1;//0.00008535226550528127; //0.1; //0.00008535226550528127;               //new: 
+    imu_variances[7] = 0.1;//0.00002174349644727122; //0.1; //0.00002174349644727122;               //new: 
+    imu_variances[8] = 1.0;//0.00001210644017747147; //1; //0.00001210644017747147;                 //new: 
 
     R_imu << imu_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,              // var(x)
              0, imu_variances[1], 0, 0, 0, 0, 0, 0, 0,              // var(y)
@@ -875,15 +881,15 @@ int main(int argc, char **argv)
 
     // CAM:
     Eigen::VectorXf cam_variances = Eigen::VectorXf::Zero(9); //[x,y,z,r,p,y, angular_vel_x, angular_vel_y, angular_vel_z]^T
-    cam_variances[0] = 0.1; //0.00000001217939299950571;
-    cam_variances[1] = 0.1; //0.0000000008446764545249315;
-    cam_variances[2] = 1.0; //0.000000007498298810942597;
-    cam_variances[3] = 0.1; //0.0002543484849699809;
-    cam_variances[4] = 0.1; //0.004764144829708403;
-    cam_variances[5] = 1.0; //0.0001030990187090913;
-    cam_variances[6] = 0.1;  //not determined
-    cam_variances[7] = 0.1;  //not determined
-    cam_variances[8] = 0.1;  //not determined
+    cam_variances[0] = 0.1; //0.00000001217939299950571;//0.1; //0.00000001217939299950571;         //new:
+    cam_variances[1] = 0.1; //0.0000000008446764545249315;//0.1; //0.0000000008446764545249315;     //new:
+    cam_variances[2] = 1.0; //0.000000007498298810942597;//1.0; //0.000000007498298810942597;       //new:
+    cam_variances[3] = 0.1; //0.0002543484849699809;//0.1; //0.0002543484849699809;                 //new:
+    cam_variances[4] = 0.1; //0.004764144829708403;//0.1; //0.004764144829708403;                   //new:
+    cam_variances[5] = 1.0; //0.0001030990187090913;//1.0; //0.0001030990187090913;                 //new:
+    cam_variances[6] = 0.1; //0.00005; //0.1;  //not determined                                     //new:
+    cam_variances[7] = 0.1; //0.00005; //0.1;  //not determined                                     //new:
+    cam_variances[8] = 0.1; //0.00005; //0.1;  //not determined                                     //new:
 
     R_cam << cam_variances[0], 0, 0, 0, 0, 0, 0, 0, 0,
              0, cam_variances[1], 0, 0, 0, 0, 0, 0, 0,
