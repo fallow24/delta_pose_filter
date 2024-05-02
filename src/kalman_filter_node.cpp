@@ -69,13 +69,6 @@ sensor_msgs::Imu cam_angular_vel_curr;
 // custom message type to store camera pose and gyro data
 realsense_pipeline_fix::CameraPoseAngularVelocity camera_pose_imu;
 
-// norm vector for rotation of angular velocity
-Eigen::Vector3f eigen_norm_vector;
-tf::Vector3 tf_norm_vector;
-
-// Store sum of filtered delta values for rpy
-Eigen::VectorXf filtered_rpy_sum = Eigen::VectorXf::Zero(3);
-
 // Save last interpolated confidence level of camera
 float last_translated_confidence;
 
@@ -168,23 +161,10 @@ inline double getYawFromQuaternion(const geometry_msgs::Quaternion &q)
 }
 
 inline uint32_t confidenceTranslator(const uint8_t &confidence){
-    // Confidence level (0 = Failed, 1 = Low, 2 = Medium, 3 = High confidence) will be translated to a factor, which the pose variance will be multiplied with
-    // low confidence -> higher variance -> less influence in KF
+    /* Confidence level (0 = Failed, 1 = Low, 2 = Medium, 3 = High confidence) will be translated to a factor, which the pose variance will be multiplied with
+    low confidence -> higher variance -> less influence in KF */
 
-    // == switch case underneath
     return pow(10, 3 - confidence);
-    /*
-    switch (confidence)
-    {
-    case 0:
-        return 1000.0;
-    case 1:
-        return 100.0;
-    case 2:
-        return 10.0;
-    default:
-        return 1.0;
-    }*/
 }
 
 inline float getScalingFactorExp(const tf::Vector3 &angular_vel, bool isCam){
@@ -200,123 +180,18 @@ inline float getScalingFactorExp(const tf::Vector3 &angular_vel, bool isCam){
     return scalingFactor;
 };
 
-inline Eigen::MatrixXf getScalingMatrixExp(const tf::Vector3 &angular_vel, bool isCam){    
-    
-    Eigen::VectorXf scalingVector = Eigen::VectorXf::Ones(9);
-    Eigen::MatrixXf scalingMatrix (9, 9);
-
-    scalingVector[0] = exp(fabs(angular_vel.getX()));
-    scalingVector[1] = exp(fabs(angular_vel.getY()));
-    scalingVector[2] = exp(fabs(angular_vel.getZ()));
-    // scalingVector[3] = exp(fabs(angular_vel.getX()));  //TODO: check if x -> roll, y -> pitch ...
-    // scalingVector[4] = exp(fabs(angular_vel.getY()));
-    // scalingVector[5] = exp(fabs(angular_vel.getZ()));
-    scalingVector[6] = exp(fabs(angular_vel.getX()));
-    scalingVector[7] = exp(fabs(angular_vel.getY()));
-    scalingVector[8] = exp(fabs(angular_vel.getZ()));
-
-    if(isCam){
-        scalingVector *= last_translated_confidence;
-    }
-
-    // Clamp to be between MIN and MAX value
-    for(int i = 0; i < scalingVector.size(); i++){
-        scalingVector[i] = std::min(std::max(scalingVector[i], MIN_SCALING_FACTOR), MAX_SCALING_FACTOR);
-    }
-
-    scalingMatrix << 
-            scalingVector[0], 0, 0, 0, 0, 0, 0, 0, 0,
-             0, scalingVector[1], 0, 0, 0, 0, 0, 0, 0,
-             0, 0, scalingVector[2], 0, 0, 0, 0, 0, 0,
-             0, 0, 0, scalingVector[3], 0, 0, 0, 0, 0,
-             0, 0, 0, 0, scalingVector[4], 0, 0, 0, 0,
-             0, 0, 0, 0, 0, scalingVector[5], 0, 0, 0,
-             0, 0, 0, 0, 0, 0, scalingVector[6], 0, 0,
-             0, 0, 0, 0, 0, 0, 0, scalingVector[7], 0,
-             0, 0, 0, 0, 0, 0, 0, 0, scalingVector[8];
-        
-    return scalingMatrix;
-
-};
-
 inline float getScalingFactorLog(const tf::Vector3 &angular_vel, bool isCam){
 
     float scalingFactor = 1.0;
     if(isCam){
         scalingFactor = last_translated_confidence * (log(angular_vel.length() + 1) + 1);
-        //scalingFactor = last_translated_confidence * (pow(10,(log(angular_vel.length() + 1))));
     }
     else scalingFactor = (log(angular_vel.length() + 1) + 1);
-    //else scalingFactor = pow(10,log(angular_vel.length() + 1));
 
     // Clamp to be between MIN and MAX value
     scalingFactor = std::min(std::max(scalingFactor, MIN_SCALING_FACTOR), MAX_SCALING_FACTOR);
     return scalingFactor;
 };
-
-inline Eigen::MatrixXf getScalingMatrixLog(const tf::Vector3 &angular_vel, bool isCam){    
-    
-    Eigen::VectorXf scalingVector = Eigen::VectorXf::Ones(9);
-    Eigen::MatrixXf scalingMatrix (9, 9);
-
-    scalingVector[0] = (log(fabs(angular_vel.getX()) + 1) + 1 );   //TODO: alternative: last_translated_confidence * pow(10, (log(fabs(angular_vel.getX()) + 1) + 1 ));
-    scalingVector[1] = (log(fabs(angular_vel.getY()) + 1) + 1 );
-    scalingVector[2] = (log(fabs(angular_vel.getZ()) + 1) + 1 );
-    // scalingVector[3] = (log(fabs(angular_vel.getX()) + 1) + 1 );  //TODO: check if x -> roll, y -> pitch ...
-    // scalingVector[4] = (log(fabs(angular_vel.getY()) + 1) + 1 );
-    // scalingVector[5] = (log(fabs(angular_vel.getZ()) + 1) + 1 );
-    scalingVector[6] = (log(fabs(angular_vel.getX()) + 1) + 1 );
-    scalingVector[7] = (log(fabs(angular_vel.getY()) + 1) + 1 );
-    scalingVector[8] = (log(fabs(angular_vel.getZ()) + 1) + 1 );
-
-    // scalingVector[0] = pow(10, log(fabs(angular_vel.getX()) + 1));   //TODO: alternative: last_translated_confidence * pow(10, (log(fabs(angular_vel.getX()) + 1)));
-    // scalingVector[1] = pow(10, log(fabs(angular_vel.getY()) + 1));
-    // scalingVector[2] = pow(10, log(fabs(angular_vel.getZ()) + 1));
-    // // scalingVector[3] = pow(10, log(fabs(angular_vel.getX()) + 1));  //TODO: check if x -> roll, y -> pitch ...
-    // // scalingVector[4] = pow(10, log(fabs(angular_vel.getY()) + 1));
-    // // scalingVector[5] = pow(10, log(fabs(angular_vel.getZ()) + 1));
-    // scalingVector[6] = pow(10, log(fabs(angular_vel.getX()) + 1));
-    // scalingVector[7] = pow(10, log(fabs(angular_vel.getY()) + 1));
-    // scalingVector[8] = pow(10, log(fabs(angular_vel.getZ()) + 1));
-
-    if(isCam){
-        scalingVector *= last_translated_confidence;
-    }
-
-    // Clamp to be between MIN and MAX value
-    for(int i = 0; i < scalingVector.size(); i++){
-        scalingVector[i] = std::min(std::max(scalingVector[i], MIN_SCALING_FACTOR), MAX_SCALING_FACTOR);
-    }
-
-    scalingMatrix << 
-            scalingVector[0], 0, 0, 0, 0, 0, 0, 0, 0,
-             0, scalingVector[1], 0, 0, 0, 0, 0, 0, 0,
-             0, 0, scalingVector[2], 0, 0, 0, 0, 0, 0,
-             0, 0, 0, scalingVector[3], 0, 0, 0, 0, 0,
-             0, 0, 0, 0, scalingVector[4], 0, 0, 0, 0,
-             0, 0, 0, 0, 0, scalingVector[5], 0, 0, 0,
-             0, 0, 0, 0, 0, 0, scalingVector[6], 0, 0,
-             0, 0, 0, 0, 0, 0, 0, scalingVector[7], 0,
-             0, 0, 0, 0, 0, 0, 0, 0, scalingVector[8];
-    
-    return scalingMatrix;
-
-};
-
-// Build scaling matrix for Q
-inline Eigen::MatrixXf getInverseScalingMatrix(Eigen::MatrixXf scalingMatrixCam, Eigen::MatrixXf scalingMatrixImu){
-    
-    Eigen::MatrixXf inverseScalingMatrix (9, 9);
-
-    // put avg of scaling matrices for R into main diagonal of scaling matrix for Q
-    for(int i = 0; i < 9; i++){
-        float avg_scalingEntry = (scalingMatrixCam(i, i) + scalingMatrixImu(i, i)) / 2.0;
-        inverseScalingMatrix(i, i) = ( 1 / avg_scalingEntry );
-        //ROS_INFO("avg:\t%f\n", avg_scalingEntry);
-    }
-    //std::cout << "Q_S:\n" << inverseScalingMatrix << std::endl;
-    return inverseScalingMatrix;
-}
 
 
 /** ----------------------------------------------------
@@ -324,7 +199,7 @@ inline Eigen::MatrixXf getInverseScalingMatrix(Eigen::MatrixXf scalingMatrixCam,
  * -----------------------------------------------------*/
 
 // LKF state
-Eigen::VectorXf state = Eigen::VectorXf::Zero(9); //(x, y, z, roll, pitch, yaw, w_x, w_y, w_z) -> initial 0
+Eigen::VectorXf state = Eigen::VectorXf::Zero(9); //(x, y, z, roll, pitch, yaw, w_x, w_y, w_z)
 
 // State propagation matrix F
 Eigen::MatrixXf F(9, 9);
@@ -336,21 +211,20 @@ Eigen::VectorXf control_input = Eigen::VectorXf::Zero(9);
 Eigen::MatrixXf G(9, 9);
 
 // state covariance matrix
-Eigen::MatrixXf P = 10 * Eigen::MatrixXf::Identity(9, 9); // for uncertainty of the state --- high number as initial value -> will convergate against smaller number
+Eigen::MatrixXf P = 10 * Eigen::MatrixXf::Identity(9, 9); //high number as initial value -> will convergate against smaller number
 
 // measurement prediction
-Eigen::VectorXf z = Eigen::VectorXf::Zero(9); // used in update step for innovation -> initial 0
+Eigen::VectorXf z = Eigen::VectorXf::Zero(9);
 
 // measurement prediction matrix
-Eigen::MatrixXf H = Eigen::MatrixXf::Identity(9, 9); // check depending on sensors -> measurement provides all variables in state -> all ones?
+Eigen::MatrixXf H = Eigen::MatrixXf::Identity(9, 9);
 
-// TODO: MAKE SMALLER BEFORE NEXT TEST
-Eigen::MatrixXf Q_init = 0.1 * Eigen::MatrixXf::Identity(9, 9); // process noise covariance matrix Q / System prediction noise -> how accurate is model
-// takes influences like wind, bumps etc into account -> should be rather small compared to P
+// process noise covariance matrix Q / System prediction noise
+Eigen::MatrixXf Q = 0.1 * Eigen::MatrixXf::Identity(9, 9);
 
 // measurement noise covariance matrix
 Eigen::MatrixXf R_imu(9, 9);
-Eigen::MatrixXf R_cam(9, 9); // evtl z achse manuell hohe varianz geben
+Eigen::MatrixXf R_cam(9, 9);
 
 // Prediction Step
 void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
@@ -367,33 +241,33 @@ void predict_state(const double dT, Eigen::VectorXf u, Eigen::MatrixXf Q)
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0;
 
-    // predict state (x_pri)
+    // Predict state (x_pri)
     state = F * state + G * u;   // 9x9 * 9x1 = 9x1
 
-    // calculate P_pri
-    P = F * P * F.transpose() + Q; // 9x9 * 9x9 * 9x9 + 9x9 = 9x9
+    // Calculate P_pri
+    P = F * P * F.transpose() + Q;
 
-    // predict measurement
+    // Predict measurement
     z = H * state; 
 }
 
 // Update Step -> measurement comes from either imu or cam callback
 void update_state(const Eigen::VectorXf &measurement, Eigen::MatrixXf R)
 {
-    // innovation covariance
-    Eigen::MatrixXf S = H * P * H.transpose() + R; // all 9x9
+    // Innovation covariance
+    Eigen::MatrixXf S = H * P * H.transpose() + R;
 
-    // kalman gain
-    Eigen::MatrixXf K = P * H.transpose() * S.inverse(); // all 9x9
+    // Kalman gain
+    Eigen::MatrixXf K = P * H.transpose() * S.inverse();
 
-    // calculate innovation
-    Eigen::VectorXf innovation = measurement - z;      // 9x1 - 9x1 = 9x1
+    // Calculate innovation
+    Eigen::VectorXf innovation = measurement - z;
     
-    // update state estimation -> correction of state (x_pos)
-    state = state + (K * innovation);                  //// 9x1 + (9x9 * 9x1) = 9x1 + 9x1 = 9x1
+    // Update state estimation
+    state = state + (K * innovation);
     
-    // Update covariance matrix (P_pos)
-    P = (Eigen::MatrixXf::Identity(9, 9) - K * H) * P; // (9x9 - (9x9 * 9x9)) * 9x9 = 9x9
+    // Calculate P_pos
+    P = (Eigen::MatrixXf::Identity(9, 9) - K * H) * P;
 }
 
 // The magic function. Includes the interpolation of the faster stream.
@@ -522,10 +396,9 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     eigen_angular_velocity_cam_rotated[1] = tf_angular_velocity_cam_rotated.getY();
     eigen_angular_velocity_cam_rotated[2] = tf_angular_velocity_cam_rotated.getZ();
    
-    // TODO: Use Covariances to decide which should be the input? 
-    // Or maybe use interpolation based on the covariances to decide the input?
 
     // Make vector 9dof for predict step
+    // Cam pose as control input
     Eigen::VectorXf eigen_angular_velocity_rotated_9dof = Eigen::VectorXf::Zero(9);
     eigen_angular_velocity_rotated_9dof[3] = getRollFromQuaternion(cam_diff_geom_msgs.orientation);
     eigen_angular_velocity_rotated_9dof[4] = getPitchFromQuaternion(cam_diff_geom_msgs.orientation);
@@ -533,6 +406,8 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     eigen_angular_velocity_rotated_9dof[6] = eigen_angular_velocity_cam_rotated[0];
     eigen_angular_velocity_rotated_9dof[7] = eigen_angular_velocity_cam_rotated[1];
     eigen_angular_velocity_rotated_9dof[8] = eigen_angular_velocity_cam_rotated[2];
+    
+    // Imu pose as control input
     // eigen_angular_velocity_rotated_9dof[3] = getRollFromQuaternion(imu_diff_geom_msgs.orientation);
     // eigen_angular_velocity_rotated_9dof[4] = getPitchFromQuaternion(imu_diff_geom_msgs.orientation);
     // eigen_angular_velocity_rotated_9dof[5] = getYawFromQuaternion(imu_diff_geom_msgs.orientation);
@@ -541,61 +416,28 @@ void apply_lkf_and_publish(const geometry_msgs::PoseStamped::ConstPtr &m)
     // eigen_angular_velocity_rotated_9dof[8] = eigen_angular_velocity_imu_rotated[2];
 
     /* 
-     * Calculate Scaling factor for covariance matrices
+     * Calculate Scaling factor for measurement noise covariance matrices
      + Take camera confidence and velocity into account
      + Low confidence -> higher variance -> more uncertainty
      + High angular velocity -> higher variance -> more uncertainty
      */
     
-    /*
-    * R matrices (measurement noise covariance)
-    */
-
-    // scalar - wise
-    
     // exp and confidence
-    // float scalingFactorCamera = getScalingFactorExp(tf_angular_velocity_cam_rotated, true);
-    // float scalingFactorImu = getScalingFactorExp(tf_angular_velocity_imu_rotated, false);
+    float scalingFactorCamera = getScalingFactorExp(tf_angular_velocity_cam_rotated, true);
+    float scalingFactorImu = getScalingFactorExp(tf_angular_velocity_imu_rotated, false);
 
     // log and cofidence
     // float scalingFactorCamera = getScalingFactorLog(tf_angular_velocity_cam_rotated, true);
     // float scalingFactorImu = getScalingFactorLog(tf_angular_velocity_imu_rotated, false);
 
-    // component - wise
-
-    // // exp and confidence
-    Eigen::MatrixXf scalingMatrixCamera = getScalingMatrixExp(tf_angular_velocity_cam_rotated, true);
-    Eigen::MatrixXf scalingMatrixImu = getScalingMatrixExp(tf_angular_velocity_imu_rotated, false);
-
-    // log and confidence
-    // Eigen::MatrixXf scalingMatrixCamera = getScalingMatrixLog(tf_angular_velocity_cam_rotated, true);
-    // Eigen::MatrixXf scalingMatrixImu = getScalingMatrixLog(tf_angular_velocity_imu_rotated, false);
-
-    Eigen::MatrixXf R_cam_scaled = R_cam * scalingMatrixCamera;
-    Eigen::MatrixXf R_imu_scaled = R_imu * scalingMatrixImu;
-
-    // std::cout << "R_s_cam:\n" << scalingMatrixCamera << std::endl;
-    // std::cout << "R_s_imu:\n" << scalingMatrixImu << std::endl;
-
- 
-    /*
-    * Q matrix (process noise covariance)
-    */
-
-    // sclar - wise
-
-    // Eigen::MatrixXf Q_scaled = Q_init * (1 / ((scalingFactorCamera + scalingFactorImu) / 2.0)); //multiply Q with inverse of avg scaling factor of R matrices
-
-    // component - wise
-
-    // Eigen::MatrixXf inverseScalingMatrix = getInverseScalingMatrix(scalingMatrixCamera, scalingMatrixImu);
-    Eigen::MatrixXf Q_scaled = Q_init;// * inverseScalingMatrix;
+    Eigen::MatrixXf R_cam_scaled = R_cam * scalingFactorCamera;
+    Eigen::MatrixXf R_imu_scaled = R_imu * scalingFactorImu;
 
     /*
      * Prediction step
      */
 
-    predict_state(dT, eigen_angular_velocity_rotated_9dof, Q_scaled);
+    predict_state(dT, eigen_angular_velocity_rotated_9dof, Q);
 
     /*
      * Update step
@@ -840,11 +682,6 @@ int main(int argc, char **argv)
     /*
     *  Initialise matrices & vectors
     */
-
-    // norm vector
-    eigen_norm_vector[0] = 0.0;
-    eigen_norm_vector[1] = 0.0;
-    eigen_norm_vector[2] = -1.0;
 
     // Control input matrix
     G << 0, 0, 0, 0, 0, 0, 0, 0, 0,
